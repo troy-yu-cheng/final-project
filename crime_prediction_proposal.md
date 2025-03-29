@@ -1,10 +1,11 @@
 # Crime Prediction in Washington DC: A Geospatial, Machine Learning, and Text Analysis Approach
 
 ## Team Members
-- Troy Cheng
-- Ziqiao Shan
-- Minji Kang
-- Sarah Krause
+
+-   Troy Cheng
+-   Ziqiao Shan
+-   Minji Kang
+-   Sarah Krause
 
 ## Research Proposal
 
@@ -60,10 +61,10 @@ The major technical hurdles we anticipate include: (1) integrating data across d
 
 ### 4. Additional Potential Data Sources
 
-- **COVID-19 Weekly Cases**: This dataset provides information on COVID-19 cases by census tract, which could be used to explore relationships between the pandemic and crime patterns.
+-   **COVID-19 Weekly Cases**: This dataset provides information on COVID-19 cases by census tract, which could be used to explore relationships between the pandemic and crime patterns.
 
-- **Bias Crime Data**: This dataset focuses specifically on hate crimes and bias-motivated incidents, which could provide additional context for understanding patterns of targeted violence.
+-   **Bias Crime Data**: This dataset focuses specifically on hate crimes and bias-motivated incidents, which could provide additional context for understanding patterns of targeted violence.
 
-- **Text Data from Crime Reports**: We plan to extract and analyze textual descriptions from crime reports to identify patterns and sentiments that may not be captured in structured data fields.
+-   **Text Data from Crime Reports**: We plan to extract and analyze textual descriptions from crime reports to identify patterns and sentiments that may not be captured in structured data fields.
 
 By integrating these diverse data sources, we aim to create a comprehensive model that captures the complex interplay of factors influencing crime rates at the census tract level in Washington DC. Our analysis will go beyond simple correlations to explore spatial dependencies, temporal patterns, and textual nuances that contribute to a deeper understanding of crime dynamics in urban environments.
