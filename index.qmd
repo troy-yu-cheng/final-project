@@ -30,17 +30,17 @@ highlight-style: nord
 engine: knitr
 ---
 
-# Exploratory Data Analysis of DC Crime Incidents
+# Exploratory Data Analysis of DC Crime Incidents (2008-2025)
 
 ## Introduction
 
-This analysis explores crime incident data in Washington DC from 2008 to 2025, focusing on spatial and temporal patterns. We'll examine trends in crime types, geographic distribution, and changes over time to provide insights into crime patterns across the city.
+This analysis explores crime incident data in Washington DC from 2008 to 2025, focusing on spatial and temporal patterns. We'll examine trends in crime types, geographic distribution, and changes over time to provide insights into crime patterns across the city. The analysis uses the comprehensive crime incidents dataset and integrates spatial data to visualize crime patterns across different areas of DC.
 
 ## Load Packages
 
 ```{r}
 # Load required packages
-# install.packages(c("leaflet", "scales", "viridis", "leaflet.extras", "DT", "plotly"))
+# install.packages(c("leaflet", "scales", "viridis", "leaflet.extras", "DT", "plotly", "patchwork"))
 
 library(tidyverse)
 library(sf)
@@ -53,6 +53,7 @@ library(viridis)        # For color palettes
 library(gridExtra)      # For arranging multiple plots
 library(DT)             # For interactive tables
 library(plotly)         # For interactive plots
+library(patchwork)      # For combining plots
 ```
 
 ## Load and Prepare Crime Data
@@ -61,137 +62,257 @@ library(plotly)         # For interactive plots
 # Set the data directory path
 data_dir <- "data/DC/crime_incidents/"
 
-# Load crime data for multiple years (2021-2023 as examples)
-crime_2021 <- read_csv(paste0(data_dir, "Crime_Incidents_in_2021.csv"))
-crime_2022 <- read_csv(paste0(data_dir, "Crime_Incidents_in_2022.csv"))
-crime_2023 <- read_csv(paste0(data_dir, "Crime_Incidents_in_2023.csv"))
+# Load the comprehensive crime data (2008-2025)
+all_crime <- read_csv(paste0(data_dir, "Crime_Incidents_in_2008 - 2025.csv"))
 
-# Function to clean crime data
-clean_crime_data <- function(data) {
-  data %>%
-    # Convert date columns to proper date format
-    mutate(
-      REPORT_DAT = as.Date(str_extract(REPORT_DAT, "\\d{4}/\\d{2}/\\d{2}")),
-      START_DATE = as.Date(str_extract(START_DATE, "\\d{4}/\\d{2}/\\d{2}")),
-      END_DATE = as.Date(str_extract(END_DATE, "\\d{4}/\\d{2}/\\d{2}"))
-    ) %>%
-    # Remove rows with missing coordinates
-    filter(!is.na(LATITUDE) & !is.na(LONGITUDE))
-}
+# Clean the data
+all_crime_clean <- all_crime %>%
+  # Convert date columns to proper date format
+  mutate(
+    REPORT_DAT = as.Date(str_extract(REPORT_DAT, "\\d{4}/\\d{2}/\\d{2}")),
+    START_DATE = as.Date(str_extract(START_DATE, "\\d{4}/\\d{2}/\\d{2}")),
+    END_DATE = as.Date(str_extract(END_DATE, "\\d{4}/\\d{2}/\\d{2}"))
+  ) %>%
+  # Extract year from report date
+  mutate(YEAR = year(REPORT_DAT)) %>%
+  # Remove rows with missing coordinates
+  filter(!is.na(LATITUDE) & !is.na(LONGITUDE))
 
-# Clean each dataset
-crime_2021_clean <- clean_crime_data(crime_2021)
-crime_2022_clean <- clean_crime_data(crime_2022)
-crime_2023_clean <- clean_crime_data(crime_2023)
-
-# Combine datasets and add year column
-crime_2021_clean <- crime_2021_clean %>% mutate(YEAR = 2021)
-crime_2022_clean <- crime_2022_clean %>% mutate(YEAR = 2022)
-crime_2023_clean <- crime_2023_clean %>% mutate(YEAR = 2023)
-
-# Combine all years
-all_crime <- bind_rows(crime_2021_clean, crime_2022_clean, crime_2023_clean)
-
-# Display the structure of the combined dataset
-glimpse(all_crime)
+# Display the structure of the dataset
+glimpse(all_crime_clean)
 ```
 
 ## Basic Crime Statistics
 
 ```{r}
 # Count of incidents by year
-all_crime %>%
+all_crime_clean %>%
   count(YEAR) %>%
-  knitr::kable(caption = "Number of Crime Incidents by Year")
+  arrange(YEAR) %>%
+  knitr::kable(caption = "Number of Crime Incidents by Year (2008-2025)")
 
-# Top crime types across all years
-all_crime %>%
-  count(OFFENSE, sort = TRUE) %>%
-  head(10) %>%
-  knitr::kable(caption = "Top 10 Crime Types (2021-2023)")
-
-# Crime methods across all years
-all_crime %>%
-  count(METHOD, sort = TRUE) %>%
-  head(10) %>%
-  knitr::kable(caption = "Top 10 Crime Methods (2021-2023)")
-
-# Crime by ward
-all_crime %>%
-  filter(!is.na(WARD) & WARD != "") %>%
-  count(WARD, sort = TRUE) %>%
-  knitr::kable(caption = "Crime Incidents by Ward (2021-2023)")
-
-# Crime by shift
-all_crime %>%
-  count(SHIFT, sort = TRUE) %>%
-  knitr::kable(caption = "Crime Incidents by Shift (2021-2023)")
-```
-
-## Temporal Analysis
-
-```{r, fig.width=10, fig.height=6}
-# Crime by month across years
-all_crime %>%
-  mutate(month = month(REPORT_DAT, label = TRUE)) %>%
-  count(YEAR, month) %>%
-  ggplot(aes(x = month, y = n, fill = factor(YEAR))) +
-  geom_col(position = "dodge") +
-  labs(title = "Crime Incidents by Month and Year",
-       x = "Month",
-       y = "Number of Incidents",
-       fill = "Year") +
-  theme_minimal() +
-  scale_fill_viridis_d()
-
-# Crime by day of week
-all_crime %>%
-  mutate(day_of_week = wday(REPORT_DAT, label = TRUE)) %>%
-  count(day_of_week) %>%
-  ggplot(aes(x = day_of_week, y = n, fill = day_of_week)) +
-  geom_col() +
-  labs(title = "Crime Incidents by Day of Week (2021-2023)",
-       x = "Day of Week",
+# Visualize crime trends over years
+all_crime_clean %>%
+  count(YEAR) %>%
+  ggplot(aes(x = YEAR, y = n)) +
+  geom_line(color = "#4DB8FF", size = 1) +
+  geom_point(color = "#0a0e1a", size = 2) +
+  labs(title = "Crime Incidents Trend (2008-2025)",
+       x = "Year",
        y = "Number of Incidents") +
   theme_minimal() +
-  scale_fill_viridis_d() +
+  scale_x_continuous(breaks = seq(2008, 2025, 2)) +
+  scale_y_continuous(labels = comma)
+
+# Top crime types across all years
+all_crime_clean %>%
+  count(OFFENSE, sort = TRUE) %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(OFFENSE, n), y = n, fill = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Top 10 Crime Types (2008-2025)",
+       x = "Crime Type",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  scale_fill_viridis_c() +
+  scale_y_continuous(labels = comma) +
   theme(legend.position = "none")
 
-# Crime by time of day (shift)
-all_crime %>%
-  count(SHIFT) %>%
-  ggplot(aes(x = SHIFT, y = n, fill = SHIFT)) +
+# Crime methods across all years
+all_crime_clean %>%
+  count(METHOD, sort = TRUE) %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(METHOD, n), y = n, fill = n)) +
   geom_col() +
-  labs(title = "Crime Incidents by Time of Day (2021-2023)",
+  coord_flip() +
+  labs(title = "Top 10 Crime Methods (2008-2025)",
+       x = "Method",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  scale_fill_viridis_c() +
+  scale_y_continuous(labels = comma) +
+  theme(legend.position = "none")
+
+# Crime by ward
+all_crime_clean %>%
+  filter(!is.na(WARD) & WARD != "") %>%
+  count(WARD, sort = TRUE) %>%
+  ggplot(aes(x = reorder(WARD, n), y = n, fill = n)) +
+  geom_col() +
+  labs(title = "Crime Incidents by Ward (2008-2025)",
+       x = "Ward",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  scale_fill_viridis_c() +
+  scale_y_continuous(labels = comma) +
+  theme(legend.position = "none")
+
+# Crime by shift
+all_crime_clean %>%
+  count(SHIFT, sort = TRUE) %>%
+  ggplot(aes(x = reorder(SHIFT, n), y = n, fill = SHIFT)) +
+  geom_col() +
+  labs(title = "Crime Incidents by Shift (2008-2025)",
        x = "Shift",
        y = "Number of Incidents") +
   theme_minimal() +
   scale_fill_viridis_d() +
+  scale_y_continuous(labels = comma) +
   theme(legend.position = "none")
+```
+
+## Temporal Analysis
+
+```{r, fig.width=10, fig.height=8}
+# Create a subset of recent years for more detailed analysis
+recent_crime <- all_crime_clean %>%
+  filter(YEAR >= 2018)
+
+# Crime by month across recent years
+p1 <- recent_crime %>%
+  mutate(month = month(REPORT_DAT, label = TRUE)) %>%
+  count(YEAR, month) %>%
+  ggplot(aes(x = month, y = n, color = factor(YEAR), group = YEAR)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Crime Incidents by Month (2018-2025)",
+       x = "Month",
+       y = "Number of Incidents",
+       color = "Year") +
+  theme_minimal() +
+  scale_color_viridis_d() +
+  scale_y_continuous(labels = comma)
+
+# Monthly patterns across all years
+p2 <- all_crime_clean %>%
+  mutate(month = month(REPORT_DAT, label = TRUE)) %>%
+  count(month) %>%
+  ggplot(aes(x = month, y = n, fill = n)) +
+  geom_col() +
+  labs(title = "Average Monthly Crime Pattern (2008-2025)",
+       x = "Month",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  scale_fill_viridis_c() +
+  scale_y_continuous(labels = comma) +
+  theme(legend.position = "none")
+
+# Combine the plots
+p1 / p2
+
+# Crime by day of week
+p3 <- all_crime_clean %>%
+  mutate(day_of_week = wday(REPORT_DAT, label = TRUE)) %>%
+  count(day_of_week) %>%
+  ggplot(aes(x = day_of_week, y = n, fill = day_of_week)) +
+  geom_col() +
+  labs(title = "Crime Incidents by Day of Week (2008-2025)",
+       x = "Day of Week",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  scale_fill_viridis_d() +
+  scale_y_continuous(labels = comma) +
+  theme(legend.position = "none")
+
+# Crime by time of day (shift)
+p4 <- all_crime_clean %>%
+  count(SHIFT) %>%
+  ggplot(aes(x = SHIFT, y = n, fill = SHIFT)) +
+  geom_col() +
+  labs(title = "Crime Incidents by Time of Day (2008-2025)",
+       x = "Shift",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  scale_fill_viridis_d() +
+  scale_y_continuous(labels = comma) +
+  theme(legend.position = "none")
+
+# Combine day of week and shift plots
+p3 + p4
+
+# Heatmap of crime by year and month
+all_crime_clean %>%
+  mutate(month = month(REPORT_DAT, label = TRUE)) %>%
+  count(YEAR, month) %>%
+  ggplot(aes(x = month, y = factor(YEAR), fill = n)) +
+  geom_tile() +
+  labs(title = "Crime Incidents Heatmap by Year and Month",
+       x = "Month",
+       y = "Year",
+       fill = "Number of Incidents") +
+  theme_minimal() +
+  scale_fill_viridis_c() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Seasonal patterns by crime type (top 5)
+all_crime_clean %>%
+  mutate(month = month(REPORT_DAT, label = TRUE)) %>%
+  count(OFFENSE, month) %>%
+  group_by(OFFENSE) %>%
+  mutate(total = sum(n)) %>%
+  ungroup() %>%
+  arrange(desc(total)) %>%
+  filter(OFFENSE %in% unique(OFFENSE)[1:5]) %>%
+  ggplot(aes(x = month, y = n, color = OFFENSE, group = OFFENSE)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Seasonal Patterns for Top 5 Crime Types",
+       x = "Month",
+       y = "Number of Incidents",
+       color = "Crime Type") +
+  theme_minimal() +
+  scale_y_continuous(labels = comma)
 ```
 
 ## Crime Type Analysis
 
-```{r, fig.width=10, fig.height=8}
-# Top crime types by year
-all_crime %>%
+```{r, fig.width=10, fig.height=10}
+# Create a subset of recent years for more detailed analysis
+recent_years <- c(2020, 2021, 2022, 2023, 2024, 2025)
+recent_crime <- all_crime_clean %>%
+  filter(YEAR %in% recent_years)
+
+# Top crime types by recent years
+recent_crime %>%
   count(YEAR, OFFENSE) %>%
   group_by(YEAR) %>%
-  top_n(10, n) %>%
+  top_n(5, n) %>%
   ungroup() %>%
   ggplot(aes(x = reorder(OFFENSE, n), y = n, fill = factor(YEAR))) +
   geom_col() +
-  facet_wrap(~YEAR, scales = "free_y") +
+  facet_wrap(~YEAR, scales = "free_y", ncol = 2) +
   coord_flip() +
-  labs(title = "Top 10 Crime Types by Year",
+  labs(title = "Top 5 Crime Types by Year (2020-2025)",
        x = "Crime Type",
        y = "Number of Incidents") +
   theme_minimal() +
   scale_fill_viridis_d() +
+  scale_y_continuous(labels = comma) +
   theme(legend.position = "none")
 
-# Crime methods by year
-all_crime %>%
+# Trend of top 5 crime types over all years
+top_5_crimes <- all_crime_clean %>%
+  count(OFFENSE) %>%
+  top_n(5, n) %>%
+  pull(OFFENSE)
+
+all_crime_clean %>%
+  filter(OFFENSE %in% top_5_crimes) %>%
+  count(YEAR, OFFENSE) %>%
+  ggplot(aes(x = YEAR, y = n, color = OFFENSE, group = OFFENSE)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Trend of Top 5 Crime Types (2008-2025)",
+       x = "Year",
+       y = "Number of Incidents",
+       color = "Crime Type") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(2008, 2025, 2)) +
+  scale_y_continuous(labels = comma)
+
+# Crime methods by recent years
+recent_crime %>%
   filter(METHOD != "OTHERS") %>%  # Exclude "OTHERS" to focus on specific methods
   count(YEAR, METHOD) %>%
   group_by(YEAR) %>%
@@ -199,50 +320,220 @@ all_crime %>%
   ungroup() %>%
   ggplot(aes(x = reorder(METHOD, n), y = n, fill = factor(YEAR))) +
   geom_col() +
-  facet_wrap(~YEAR, scales = "free_y") +
+  facet_wrap(~YEAR, scales = "free_y", ncol = 2) +
   coord_flip() +
-  labs(title = "Top 5 Crime Methods by Year",
+  labs(title = "Top 5 Crime Methods by Year (2020-2025)",
        x = "Method",
        y = "Number of Incidents") +
   theme_minimal() +
   scale_fill_viridis_d() +
+  scale_y_continuous(labels = comma) +
   theme(legend.position = "none")
+
+# Trend of violent vs. property crimes
+all_crime_clean <- all_crime_clean %>%
+  mutate(crime_category = case_when(
+    OFFENSE %in% c("HOMICIDE", "ASSAULT W/DANGEROUS WEAPON", "SEX ABUSE", "ROBBERY") ~ "Violent Crime",
+    OFFENSE %in% c("THEFT/OTHER", "THEFT F/AUTO", "BURGLARY", "MOTOR VEHICLE THEFT", "ARSON") ~ "Property Crime",
+    TRUE ~ "Other Crime"
+  ))
+
+all_crime_clean %>%
+  count(YEAR, crime_category) %>%
+  ggplot(aes(x = YEAR, y = n, color = crime_category, group = crime_category)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Trend of Crime Categories (2008-2025)",
+       x = "Year",
+       y = "Number of Incidents",
+       color = "Crime Category") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(2008, 2025, 2)) +
+  scale_y_continuous(labels = comma) +
+  scale_color_viridis_d()
+
+# Proportion of crime categories by year
+all_crime_clean %>%
+  count(YEAR, crime_category) %>%
+  group_by(YEAR) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ggplot(aes(x = YEAR, y = proportion, fill = crime_category)) +
+  geom_area() +
+  labs(title = "Proportion of Crime Categories by Year (2008-2025)",
+       x = "Year",
+       y = "Proportion",
+       fill = "Crime Category") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(2008, 2025, 2)) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_viridis_d()
 ```
 
 ## Spatial Analysis
 
-```{r, fig.width=10, fig.height=8}
-# Create a basic map of crime incidents for 2023
-leaflet(crime_2023_clean) %>%
-  addTiles() %>%  # Add default OpenStreetMap tiles
-  addCircleMarkers(
-    ~LONGITUDE, ~LATITUDE,
-    radius = 3,
-    color = "red",
-    stroke = FALSE,
-    fillOpacity = 0.5,
-    popup = ~paste("Offense:", OFFENSE, "<br>Date:", REPORT_DAT, "<br>Block:", BLOCK)
-  ) %>%
-  addLegend("bottomright", 
-            colors = "red",
-            labels = "Crime Incidents (2023)",
-            opacity = 0.7)
+```{r, fig.width=10, fig.height=10}
+# Load the shapefile for DC crime incidents from 2025
+dc_crime_sp <- st_read("data/DC/crime_incidents/shp/Crime_Incidents_in_2025/Crime_Incidents_in_2025.shp", quiet = TRUE)
 
-# Create a heat map of crime incidents for 2023
-leaflet(crime_2023_clean) %>%
-  addTiles() %>%  # Add default OpenStreetMap tiles
-  addHeatmap(
-    lng = ~LONGITUDE, 
-    lat = ~LATITUDE,
-    intensity = 0.5,
-    radius = 10,
-    blur = 15
-  ) %>%
-  addLegend("bottomright", 
-            colors = c("yellow", "red"),
-            labels = c("Low Density", "High Density"),
-            title = "Crime Density (2023)",
-            opacity = 0.7)
+# Load police sectors shapefile
+police_sectors_sp <- st_read("data/DC/polica_sector_division/Police_Sectors/Police_Sectors.shp", quiet = TRUE)
+
+# Transform police sectors to WGS84 (EPSG:4326) to match crime data
+police_sectors_sp <- st_transform(police_sectors_sp, crs = 4326)
+
+# Load census blocks shapefile
+census_blocks_sp <- st_read("data/DC/2020_census_blockLevel/Census_Blocks_in_2020/Census_Blocks_in_2020.shp", quiet = TRUE)
+
+# Convert crime data to sf object for spatial analysis
+crime_sf <- all_crime_clean %>%
+  filter(YEAR == 2025) %>%  # Focus on 2025 for spatial analysis
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
+
+# Create a basic map of DC with crime incidents
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(data = police_sectors_sp, 
+              fillColor = "#4DB8FF",
+              fillOpacity = 0.2,
+              color = "#0a0e1a",
+              weight = 1,
+              label = ~NAME) %>%
+  addCircleMarkers(data = crime_sf,
+                  radius = 2,
+                  color = "#FF4D4D",
+                  fillOpacity = 0.7,
+                  stroke = FALSE,
+                  popup = ~paste("Type: ", OFFENSE, "<br>",
+                                "Date: ", REPORT_DAT, "<br>",
+                                "Method: ", METHOD)) %>%
+  addLegend(position = "bottomright",
+            colors = c("#4DB8FF", "#FF4D4D"),
+            labels = c("Police Sectors", "Crime Incidents"),
+            title = "DC Crime Map (2025)")
+
+# Create a heatmap of crime incidents
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.DarkMatter) %>%
+  addHeatmap(data = crime_sf,
+             radius = 10,
+             blur = 15,
+             max = 0.1,
+             gradient = "RdYlBu") %>%
+  addLegend(position = "bottomright",
+            colors = colorRampPalette(c("blue", "yellow", "red"))(3),
+            labels = c("Low", "Medium", "High"),
+            title = "Crime Density (2025)")
+
+# Perform spatial join with police sectors
+crime_sectors_joined <- st_join(crime_sf, police_sectors_sp, join = st_intersects) %>%
+  st_drop_geometry()
+
+# Aggregate crime by police sector
+sector_crime_counts <- crime_sectors_joined %>%
+  group_by(SECTOR) %>%
+  summarize(crime_count = n()) %>%
+  arrange(desc(crime_count))
+
+# Display top sectors by crime count
+head(sector_crime_counts, 10) %>%
+  knitr::kable(caption = "Top 10 Police Sectors by Crime Count (2025)")
+
+# Join crime counts back to police sectors for choropleth map
+sector_crime_map <- left_join(police_sectors_sp, sector_crime_counts, by = "SECTOR")
+
+# Create choropleth map of crime by police sector
+ggplot(sector_crime_map) +
+  geom_sf(aes(fill = crime_count)) +
+  scale_fill_viridis_c(option = "plasma", name = "Crime Count") +
+  labs(title = "Crime Incidents by Police Sector (2025)") +
+  theme_minimal()
+
+# Analyze crime by type and location
+crime_type_location <- crime_sf %>%
+  group_by(OFFENSE) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count)) %>%
+  head(5)
+
+# Create maps for top 5 crime types
+top_5_crime_types <- crime_type_location$OFFENSE
+
+for (crime_type in top_5_crime_types) {
+  crime_subset <- crime_sf %>% filter(OFFENSE == crime_type)
+  
+  print(
+    leaflet() %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      addCircleMarkers(data = crime_subset,
+                      radius = 3,
+                      color = "#FF4D4D",
+                      fillOpacity = 0.7,
+                      stroke = FALSE) %>%
+      addLegend(position = "bottomright",
+                colors = "#FF4D4D",
+                labels = crime_type,
+                title = paste("Crime Type:", crime_type))
+  )
+}
+
+# Analyze crime patterns by time of day and location
+crime_time_location <- crime_sf %>%
+  group_by(SHIFT) %>%
+  summarize(count = n())
+
+# Create maps for each time shift
+for (shift in unique(crime_sf$SHIFT)) {
+  crime_subset <- crime_sf %>% filter(SHIFT == shift)
+  
+  print(
+    leaflet() %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      addHeatmap(data = crime_subset,
+                radius = 10,
+                blur = 15,
+                max = 0.1,
+                gradient = "RdYlBu") %>%
+      addLegend(position = "bottomright",
+                colors = colorRampPalette(c("blue", "yellow", "red"))(3),
+                labels = c("Low", "Medium", "High"),
+                title = paste("Crime Density -", shift))
+  )
+}
+# Create a basic map of crime incidents for 2023
+try({
+  crime_2023_clean <- all_crime_clean %>% filter(YEAR == 2023)
+  
+  leaflet(crime_2023_clean) %>%
+    addTiles() %>%  # Add default OpenStreetMap tiles
+    addCircleMarkers(
+      ~LONGITUDE, ~LATITUDE,
+      radius = 3,
+      color = "red",
+      stroke = FALSE,
+      fillOpacity = 0.5,
+      popup = ~paste("Offense:", OFFENSE, "<br>Date:", REPORT_DAT, "<br>Block:", BLOCK)
+    ) %>%
+    addLegend("bottomright", 
+              colors = "red",
+              labels = "Crime Incidents (2023)",
+              opacity = 0.7)
+  
+  # Create a heat map of crime incidents for 2023
+  leaflet(crime_2023_clean) %>%
+    addTiles() %>%  # Add default OpenStreetMap tiles
+    addHeatmap(
+      lng = ~LONGITUDE, 
+      lat = ~LATITUDE,
+      intensity = 0.5,
+      radius = 10,
+      blur = 15
+    ) %>%
+    addLegend("bottomright", 
+              colors = c("yellow", "red"),
+              labels = c("Low Density", "High Density"),
+              title = "Crime Density (2023)",
+              opacity = 0.7)
+}, silent = TRUE)
 ```
 
 ## Load and Analyze Shapefile Data
@@ -338,56 +629,59 @@ ggplot(offense_trends, aes(x = year, y = n, color = OFFENSE, group = OFFENSE)) +
 ## Ward-Level Analysis
 
 ```{r, fig.width=10, fig.height=8}
-# Crime incidents by ward and year
-ward_year_counts <- all_crime %>%
-  filter(!is.na(WARD) & WARD != "") %>%
-  count(WARD, YEAR)
-
-# Plot crime by ward and year
-ggplot(ward_year_counts, aes(x = WARD, y = n, fill = factor(YEAR))) +
-  geom_col(position = "dodge") +
-  labs(title = "Crime Incidents by Ward and Year",
-       x = "Ward",
-       y = "Number of Incidents",
-       fill = "Year") +
-  theme_minimal() +
-  scale_fill_viridis_d()
-
-# Analyze top crime types by ward
-ward_crime_types <- all_crime %>%
-  filter(!is.na(WARD) & WARD != "") %>%
-  count(WARD, OFFENSE) %>%
-  group_by(WARD) %>%
-  top_n(3, n) %>%
-  ungroup()
-
-# Create a faceted bar chart of top crime types by ward
-ggplot(ward_crime_types, aes(x = reorder(OFFENSE, n), y = n, fill = OFFENSE)) +
-  geom_col() +
-  facet_wrap(~WARD, scales = "free_y") +
-  coord_flip() +
-  labs(title = "Top 3 Crime Types by Ward (2021-2023)",
-       x = "Crime Type",
-       y = "Number of Incidents") +
-  theme_minimal() +
-  scale_fill_viridis_d() +
-  theme(legend.position = "none")
+# # Crime incidents by ward and year
+# ward_year_counts <- all_crime %>%
+#   filter(!is.na(WARD) & WARD != "") %>%
+#   count(WARD, YEAR)
+# 
+# # Plot crime by ward and year
+# ggplot(ward_year_counts, aes(x = WARD, y = n, fill = factor(YEAR))) +
+#   geom_col(position = "dodge") +
+#   labs(title = "Crime Incidents by Ward and Year",
+#        x = "Ward",
+#        y = "Number of Incidents",
+#        fill = "Year") +
+#   theme_minimal() +
+#   scale_fill_viridis_d()
+# 
+# # Analyze top crime types by ward
+# ward_crime_types <- all_crime %>%
+#   filter(!is.na(WARD) & WARD != "") %>%
+#   count(WARD, OFFENSE) %>%
+#   group_by(WARD) %>%
+#   top_n(3, n) %>%
+#   ungroup()
+# 
+# # Create a faceted bar chart of top crime types by ward
+# ggplot(ward_crime_types, aes(x = reorder(OFFENSE, n), y = n, fill = OFFENSE)) +
+#   geom_col() +
+#   facet_wrap(~WARD, scales = "free_y") +
+#   coord_flip() +
+#   labs(title = "Top 3 Crime Types by Ward (2021-2023)",
+#        x = "Crime Type",
+#        y = "Number of Incidents") +
+#   theme_minimal() +
+#   scale_fill_viridis_d() +
+#   theme(legend.position = "none")
 ```
 
-## Conclusion
+# Conclusion
 
-This exploratory data analysis of crime incidents in Washington DC from 2021 to 2023 reveals several important patterns:
+This exploratory data analysis of crime incidents in Washington DC from 2008 to 2025 reveals several important patterns:
 
-1. **Temporal Patterns**: Crime incidents show distinct patterns by time of day, day of week, and season, with certain periods experiencing higher rates of specific crimes.
+1.  **Temporal Patterns**: Crime incidents show distinct patterns by time of day, day of week, and season, with certain periods experiencing higher rates of specific crimes.
 
-2. **Spatial Distribution**: Heat maps highlight crime hotspots across the city, with different crime types showing unique spatial patterns.
+2.  **Spatial Distribution**: Heat maps highlight crime hotspots across the city, with different crime types showing unique spatial patterns.
 
-3. **Crime Trends**: The analysis of multi-year data shows changing patterns in crime types and methods over time, with some offenses increasing while others decrease.
+3.  **Crime Trends**: The analysis of multi-year data shows changing patterns in crime types and methods over time, with some offenses increasing while others decrease.
 
-4. **Ward-Level Variations**: Different wards experience different types and frequencies of crime, suggesting the need for targeted prevention strategies.
+4.  **Ward-Level Variations**: Different wards experience different types and frequencies of crime, suggesting the need for targeted prevention strategies.
 
 Further analysis could explore the relationship between crime patterns and socioeconomic factors, as well as the impact of policy interventions on crime rates in specific areas.
 
+\`\`\`
+
+{=html}
 
 ```{=html}
 <script>
@@ -416,3 +710,4 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 });
 </script>
+```
