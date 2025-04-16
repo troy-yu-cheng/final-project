@@ -1,0 +1,381 @@
+---
+title: "Data Science for Public Policy"
+subtitle: "Final Project"
+author: 
+  - name: "Troy Cheng, Ziqiao Shan, Minji Kang & Sarah Krause"
+    email: yc1317@georgetown.edu
+    affiliation: Georgetown University
+    corresponding: true
+df-print: kable
+title-block-banner: "#0a0e1a"
+title-block-banner-color: "#4DB8FF"
+execute:
+  warning: false
+date: 2025-03-25
+date-modified: last-modified
+format:
+  html:
+    embed-resources: true
+    toc: true                 
+    toc-title: "Contents"     
+    toc-location: right       
+    number-sections: true
+    number-depth: 3       
+    smooth-scroll: true       
+    css: trycstyle.css 
+    code-overflow: wrap
+include-in-header:
+  text: |
+    <link rel="shortcut icon" href="assets/gu.ico" type="image/x-icon">           
+highlight-style: nord       
+engine: knitr
+---
+
+```{r}
+#| label: set up pak
+library(tidyverse)
+library(readr)
+library(haven)
+library(lubridate)
+library(tidymodels)
+library(tidycensus)
+library(janitor)
+library(sf)
+
+
+library(themis)
+library(rpart)
+library(vip)
+library(ranger)
+library(earth)
+library(textrecipes)
+library(stopwords)
+```
+
+## Set up
+
+### First Stage for Data Processing (DC Open Data)
+
+```{r}
+
+crime_incidents <- read_csv("data/DC/crime_incidents/Crime_Incidents_in_2008 - 2025.csv")
+
+# Check different categories of crime
+crime_incidents |>
+  count(OFFENSE, sort = TRUE)
+
+sort(unique(crime_incidents$OFFENSE))
+
+# Clean names
+crime_incidents <- janitor::clean_names(crime_incidents)
+
+# attach felony/not felony flag
+crime_incidents <- crime_incidents |>
+  mutate(felony_flag = case_when(
+    offense %in% c("HOMICIDE", "SEX ABUSE", "ASSAULT W/DANGEROUS WEAPON",
+                   "ROBBERY", "BURGLARY", "ARSON", "MOTOR VEHICLE THEFT") ~ 1,
+    TRUE ~ 0
+  ))
+
+# arrange different levels of serverity of felony
+crime_incidents <- crime_incidents |>
+  mutate(felony_severity = case_when(
+    offense == "HOMICIDE" ~ 7,
+    offense == "SEX ABUSE" ~ 6,
+    offense == "ASSAULT W/DANGEROUS WEAPON" ~ 5,
+    offense == "ROBBERY" ~ 4,
+    offense == "ARSON" ~ 3,
+    offense == "BURGLARY" ~ 2,
+    offense == "MOTOR VEHICLE THEFT" ~ 1,
+    TRUE ~ 0  # not felony
+  ))
+
+
+view(crime_incidents)
+
+glimpse(crime_incidents)
+
+
+crime_sf <- st_as_sf(crime_incidents,
+                     coords = c("longitude", "latitude"),
+                     crs = 4326) 
+```
+
+
+
+```{r}
+# Liquor Moratorium Zone (polygon)
+
+# 1. 读取 shapefile：售酒限制区域（moratorium zones）
+liquor_zone_sf <- st_read("data/DC/liquor/Alcoholic_Beverage_and_Cannabis_Administration_Moratorium_Zones/Alcoholic_Beverage_and_Cannabis_Administration_Moratorium_Zones.shp")
+
+# 2. 检查 geometry 类型
+st_geometry_type(liquor_zone_sf)
+table(st_geometry_type(liquor_zone_sf))
+
+# 3. 只保留 polygon 类型
+liquor_zone_sf <- liquor_zone_sf %>%
+  filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON"))
+
+# 4. 投影转换为米制（EPSG:3857）——与 crime_m 对齐，便于后续空间判断
+crime_m <- st_transform(crime_sf, crs = 3857)
+liquor_zone_m <- st_transform(liquor_zone_sf, 3857)
+
+# 5. 空间交集判断：每个 crime 是否落入某个售酒限制区 polygon 中
+crime_m$in_liquor_moratorium_zone <- lengths(st_intersects(crime_m, liquor_zone_m)) > 0
+
+# 6. 转为整数型 0/1（便于建模）
+crime_m$in_liquor_moratorium_zone <- as.integer(crime_m$in_liquor_moratorium_zone)
+
+# 7. 查看分布（判断数据合理性）
+table(crime_m$in_liquor_moratorium_zone)
+
+# 8. 去掉 geometry，转换为 data.frame 继续分析建模用
+crime_enriched <- crime_m |>
+  st_drop_geometry() |>
+  select(everything())
+
+
+
+# Liquor Store Location
+
+# 1. 读取 Liquor 店铺信息的 CSV 文件
+liquor_csv <- read_csv("data/DC/liquor/Liquor_Licenses.csv")
+
+# 2. check数据结构
+# glimpse(liquor_csv)
+
+# 3. 检查坐标字段
+summary(liquor_csv$LONGITUDE)
+summary(liquor_csv$LATITUDE)
+table(liquor_csv$STATUS)
+
+# 4. 过滤掉没有经纬度的记录
+liquor_csv_clean <- liquor_csv %>%
+  filter(STATUS == "Active") %>%
+  filter(!is.na(LONGITUDE), !is.na(LATITUDE))  # 原始的缺失值处理
+
+# 5. 转换为 sf 对象（经纬度系统 EPSG:4326）
+liquor_store_sf <- st_as_sf(liquor_csv_clean, coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
+
+# st_geometry_type(liquor_store_sf)
+
+# 6. 转换为米制（EPSG:3857）与 crime_m 对齐
+liquor_store_m <- st_transform(liquor_store_sf, 3857)
+
+# 7. 计算距离矩阵：每条 crime 到所有 liquor store 的距离
+dist_matrix_liquorstore <- st_distance(crime_m, liquor_store_m)
+
+# 8. 生成特征列
+
+# 到最近 liquor store 的距离（单位：米）
+crime_m$nearest_liquorstore_dist <- apply(dist_matrix_liquorstore, 1, min)
+
+# 是否在 200 米以内有 liquor store
+crime_m$near_liquorstore_200m <- apply(dist_matrix_liquorstore, 1, function(x) any(x < 200))
+crime_m$near_liquorstore_200m <- as.integer(crime_m$near_liquorstore_200m)
+
+# 9. 查看分布情况
+summary(crime_m$nearest_liquorstore_dist)
+table(crime_m$near_liquorstore_200m)
+
+```
+
+
+```{r}
+# WiFi spots (point)
+
+# 1. 读取 wifi shapefile
+wifi_sf <- st_read("data/DC/wireless_hotspots/Wireless_Hotspots_from_DC_Government/Wireless_Hotspots_from_DC_Government.shp")
+
+# 2. 转换为 WGS84（经纬度）
+wifi_sf <- st_transform(wifi_sf, crs = 4326)
+
+# 3. 检查 geometry 类型
+st_geometry_type(wifi_sf)  
+
+# 4. 转换到米制坐标系（EPSG:3857）进行空间计算
+wifi_m <- st_transform(wifi_sf, 3857)
+
+# 5. 计算距离矩阵（crime x wifi）
+dist_matrix_wifi <- st_distance(crime_m, wifi_m)
+
+# 6. 判断每条 crime 是否在 100 米内有 wifi 点
+crime_m$near_wifi_100m <- apply(dist_matrix_wifi, 1, function(x) any(x < 100))
+crime_m$near_wifi_100m <- as.integer(crime_m$near_wifi_100m) 
+
+# 7. 可选：计算最近 wifi 点的实际距离（用于可视化分析）
+crime_m$nearest_wifi_dist <- apply(dist_matrix_wifi, 1, min)
+
+# 8. 转回普通数据框，便于建模
+crime_enriched <- crime_m %>%
+  st_drop_geometry()
+
+# 查看分布情况
+table(crime_m$near_wifi_100m)
+summary(crime_m$nearest_wifi_dist)
+
+```
+
+
+```{r}
+# Low food access (polygon)
+# 1. 读取 low food access shapefile
+lowfood_sf <- st_read("data/DC/low_food_access/Low_Food_Access_Areas/Low_Food_Access_Areas.shp")
+
+# 2. 转换为经纬度
+lowfood_sf <- st_transform(lowfood_sf, 4326)
+
+st_geometry_type(lowfood_sf)
+
+# 4. 转换到米制坐标系（EPSG:3857）进行空间计算(仍然是polygon)
+lowfood_m <- st_transform(lowfood_sf, 3857)
+st_geometry_type(lowfood_m)
+
+# 5. 判断是否落入 low-food-access polygon 区域
+crime_m$in_lowfood_zone <- lengths(st_intersects(crime_m, lowfood_m)) > 0
+
+# 6. 转换为 0 / 1，便于后续建模
+crime_m$in_lowfood_zone <- as.integer(crime_m$in_lowfood_zone)
+
+# 7. 查看分布
+table(crime_m$in_lowfood_zone)
+
+```
+
+```{r}
+# Grocery Store (point)
+# 读取并转换
+grocery_sf <- st_read("data/DC/grocery_store/Grocery_Store_Locations/Grocery_Store_Locations.shp")
+grocery_sf <- st_transform(grocery_sf, 4326)
+st_geometry_type(grocery_sf)
+grocery_m <- st_transform(grocery_sf, 3857)
+
+# 计算距离
+dist_matrix_grocery <- st_distance(crime_m, grocery_m)
+
+# 加入特征
+crime_m$nearest_grocery_dist <- apply(dist_matrix_grocery, 1, min)
+crime_m$near_grocery_300m <- apply(dist_matrix_grocery, 1, function(x) any(x < 300))
+crime_m$near_grocery_300m <- as.integer(crime_m$near_grocery_300m)
+
+# 查看分布情况
+table(crime_m$near_grocery_300m)
+summary(crime_m$nearest_grocery_dist)
+
+```
+
+
+```{r}
+# Bank Location (point)
+bank_sf <- st_read("data/DC/bank_location/Bank_Locations/Bank_Locations.shp")
+bank_sf <- st_transform(bank_sf, 4326)
+st_geometry_type(bank_sf)
+bank_m <- st_transform(bank_sf, 3857)
+
+dist_matrix_bank <- st_distance(crime_m, bank_m)
+
+crime_m$nearest_bank_dist <- apply(dist_matrix_bank, 1, min)
+crime_m$near_bank_250m <- apply(dist_matrix_bank, 1, function(x) any(x < 250))
+crime_m$near_bank_250m <- as.integer(crime_m$near_bank_250m)
+
+# 查看分布情况
+table(crime_m$near_bank_250m)
+summary(crime_m$nearest_bank_dist)
+```
+
+
+
+```{r}
+# Vending Zone (polygon)
+vending_sf <- st_read("data/DC/street_vending/Street_Vending_Zones/Street_Vending_Zones.shp")
+st_geometry_type(vending_sf)
+vending_sf <- st_transform(vending_sf, 3857)  # polygon 所以只需匹配 crime_m
+
+crime_m$in_vending_zone <- lengths(st_intersects(crime_m, vending_sf)) > 0
+crime_m$in_vending_zone <- as.integer(crime_m$in_vending_zone)
+
+# 查看分布情况
+table(crime_m$in_vending_zone)
+```
+
+
+
+```{r}
+crime_enriched <- crime_m %>%
+  st_drop_geometry()
+
+glimpse(crime_enriched)
+
+write_csv(crime_enriched, "data/crime_enriched.csv")
+```
+
+
+### Second Stage for Data Processing (ACS Data)
+
+Here we are going to use`tidycensus` package and ACS data to further enrich our data frame. To do so, you need to have a Census API first.
+
+
+```{r}
+# If you installed Census API in your R global env once, use this code to check:
+Sys.getenv("CENSUS_API_KEY") 
+
+# If not, open "https://api.census.gov/data/key_signup.html" to get one, then:
+# if (!file.exists("~/.Renviron") || !any(grepl("CENSUS_API_KEY", readLines("~/.Renviron")))) {
+#   census_api_key("YOUR_API_KEY_HERE", install = TRUE)
+#   message("API key added. Please restart your R session.")
+# } else {
+#   message("Census API key already installed.")
+# }
+
+
+years <- 2009:2023  # 5-year ACS 数据最早从 2009 开始有用
+
+acs_list <- map_dfr(years, function(y) {
+  get_acs(geography = "tract",
+          state = "DC",
+          year = y,
+          variables = c(median_income = "B19013_001", 
+                        poverty_rate = "B17001_002"),
+          survey = "acs5",
+          geometry = FALSE) %>%
+    mutate(year = y)
+})
+
+
+
+
+
+
+```
+
+### Final Stage for Data Processing (NIBRS Data)
+
+## Come up with Models
+
+
+
+```{r}
+
+
+
+```
+
+## Estimation
+
+
+```{r}
+
+
+
+```
+
+
+## Interpretation
+
+
+```{r}
+
+
+
+```
