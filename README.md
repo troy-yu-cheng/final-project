@@ -25,8 +25,11 @@ This would also inform what years of crime data you'll use to create your outcom
 Another place to think about time is setting up your training and testing sets, as well as your resampling. I'd encourage you to check out these resources I shared on Slack:
 
 Time-series resampling with tidymodels:
+
 <https://www.tidymodels.org/learn/models/time-series/>
+
 <https://rsample.tidymodels.org/reference/slide-resampling.html>
+
 I'd note that the ACS demographic and economic variables are available at the tract level!
 
 I would encourage you to think about opportunities for other spatial analysis. For example, you can look at crime rates within a given distance buffer around other points of interest, like metro stations. 
