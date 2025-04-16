@@ -389,7 +389,7 @@ document.addEventListener("DOMContentLoaded", function() {
         const sourceLink = document.createElement("div");
         sourceLink.innerHTML = `
             <div class="toc-source">
-                <a href="https://troy-yu-cheng.github.io/final-project/" 
+                <a href="https://github.com/troy-yu-cheng/final-project/" 
                    target="_blank" 
                    class="github-button">
                    <svg xmlns="http://www.w3.org/2000/svg" 
