@@ -1,6 +1,6 @@
 # Intro2DS Final Proj: Crime Prediction in Washington DC
 
-*Author: Troy Cheng*
+*Author: Troy Cheng, Ziqiao Shan*
 
 ## Project Description
 
