@@ -5,6 +5,16 @@ body {
     font-family: 'Playfair Display', 'Georgia', serif; 
 }
 
+/* Title metadata heading (e.g., Author, Affiliation, etc.) */
+.quarto-title-meta-heading {
+    line-height: 1 !important;
+  }
+  
+  /* Metadata content (e.g., names, emails, etc.) */
+  .quarto-title-meta-contents p {
+    line-height: 1 !important;
+  }
+  
 
 /* Paragraph */
 p {
@@ -34,14 +44,15 @@ ul, ol {
     font-family: 'Playfair Display', 'Georgia', serif; 
 }
 
-.subtitle {
-    font-size: 1.8rem;
-    color: #82AAFF;
+/* Subtitle under the main title */
+.subtitle.lead {
+    font-size: 1.3rem !important;  
+    color: #c0c6d1;
     text-align: center;
-    margin-bottom: 20px;
-    font-family: 'Playfair Display', 'Georgia', serif; 
+    margin-top: 8px;
+    margin-bottom: 8px !important;
+    font-family: 'Playfair Display', 'Georgia', serif;
 }
-
 
 /* Section Title Styles */
 h1 {
