@@ -217,9 +217,12 @@ Furthermore, we calculate average felony rates by census tract and display them 
 
 ```{r}
 #| label: map-felony-by-tract
+#| message: false
+#| warning: false
 
 dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
-
+```
+```{r}
 tract_felrate <- crime_train |>
   group_by(tract) |>
   summarize(
@@ -322,7 +325,7 @@ Three model specifications are as below. Each model uses different combinations 
 
 This model uses logistic regression with L1 regularization to predict felony likelihood, prioritizing interpretability and simplicity. It focuses on demographic and temporal predictors that reflect structural and situational risk. The L1 penalty helps reduce noise by shrinking less relevant variables toward zero.
 
-We include seven ACS-derived variables: `poverty rate`, `renter share`, `Black and Hispanic population percentages`, `foreign-born share`, and `the proportions of residents under 18 and over 65`. We also include two crime-level factors: `police shift` and `method of offense`.
+We include seven ACS-derived variables: `poverty rate`, `renter share`, `Black and Hispanic population percentages`, `foreign-born share`, and the proportions of residents under 18 and over 65. We also include two crime-level factors: `police shift` and `method of offense`.
 
 Preprocessing steps include:
 
@@ -433,7 +436,9 @@ rf_wf <- workflow() |>
 
 This model maximizes predictive power by incorporating the full set of spatial, socioeconomic, and temporal predictors available in the dataset. Unlike Models 1 and 2, which focus on interpretability or spatial patterns, this model includes feature broadly and lets the boosting algorithm handle interactions and variable selection.
 
-The predictors include: 1. Spatial and Proximity Features: `in_liquor_moratorium_zone`, `nearest_liquorstore_dist`, `near_liquorstore_200m`, `near_wifi_100m`, `nearest_wifi_dist`, `in_lowfood_zone`, `nearest_grocery_dist`, `near_grocery_300m`, `nearest_bank_dist`, `near_bank_250m`, `in_vending_zone`, `police_sector`, `in_military_base`.
+The predictors include: 
+
+1.  Spatial and Proximity Features: `in_liquor_moratorium_zone`, `nearest_liquorstore_dist`, `near_liquorstore_200m`, `near_wifi_100m`, `nearest_wifi_dist`, `in_lowfood_zone`, `nearest_grocery_dist`, `near_grocery_300m`, `nearest_bank_dist`, `near_bank_250m`, `in_vending_zone`, `police_sector`, `in_military_base`.
 
 2.  Demographic and Socioeconomic Features from ACS: `median_income`, `poverty_rate`, `unemployed_rate`, `singlemom_pct`, `renter_pct`, `no_vehicle_pct`, `black_pct`, `hispanic_pct`, `foreign_born_pct`, `hsplus_pct`, `under18_pct`, `age65plus_pct`.
 
@@ -1488,7 +1493,7 @@ crime_enriched_no_na <- read_csv("data/crime_enriched_acs_nona.csv")
 
 ## Final Stage for Data Processing (NIBRS Data)
 
-This part is for final project's data and is still in processing. You can skip this part because we won't use NIBSR data for this exercise.
+This part is for final project's data and is still in processing. 
 
 ```{r}
 #| eval: false
@@ -1498,7 +1503,6 @@ test_rds <- readRDS("data/DC/nibrs/offense/nibrs_offense_segment_2021.rds")
 admin_2023 <- readRDS("data/DC/nibrs/admin/nibrs_administrative_segment_2021.rds")
 
 ```
-
 
 
 ```{=html}
