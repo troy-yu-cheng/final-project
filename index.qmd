@@ -31,8 +31,10 @@ highlight-style: nord
 engine: knitr
 ---
 
+# Set up
+
 ```{r}
-#| label: set up pak
+#| label: set up packages
 library(tidyverse)
 library(readr)
 library(haven)
@@ -41,23 +43,848 @@ library(tidymodels)
 library(tidycensus)
 library(janitor)
 library(sf)
-
-
+library(plotly)
 library(themis)
-library(rpart)
 library(vip)
 library(ranger)
-library(earth)
-library(textrecipes)
-library(stopwords)
+library(xgboost)
+library(rlang)
 ```
 
-## Set up
+## Prepare Data Set
 
-### First Stage for Data Processing (DC Open Data)
+In this stretch exercise, we use a government and policy-relevant dataset to develop a practical binary classification model predicting whether a reported crime incident in Washington, D.C. is a felony.
+
+The data is compiled primarily from the [DC Open Data Portal](https://opendata.dc.gov/). The main source is a series of datasets titled *Crime Incidents*, released annually from 2008 to 2025, comprising a total of eighteen datasets. These include metadata for each crime incident, such as the exact date and time of occurrence, geographic coordinates (latitude and longitude), offense classification (e.g., theft, robbery), police shift (e.g., evening, midnight).
+
+To enrich the crime records with contextual and spatial information, we merged several additional geospatial datasets also provided by DC Open Data. These include:
+
+-   Liquor license moratorium zones
+
+-   Locations and proximity of liquor stores, grocery stores, and banks
+
+-   Public WiFi zones and vending zones
+
+-   Low food access areas
+
+-   Police sector boundaries and military base zones
+
+We also integrated tract-level socioeconomic indicators from the American Community Survey (ACS5) using the `tidycensus` package. These variables include poverty rate, income, renter percentage, race/ethnicity composition, vehicle ownership, and age structure etc. Notably, since ACS5 provides rolling estimates across five-year spans, we aligned each crime observation with the most recent ACS data available for that year. For example, the 2005–2009 ACS estimates are used to represent conditions in 2009. While not a perfect snapshot, this method can act as a consistent way to approximate local context year by year.
+
+The final merged dataset (`crime_enriched_acs_nona.csv`) is available via this [shared link](https://drive.google.com/file/d/1xSicNSVM_-Xzb-CoXYXpTYt98r9PON7n/view?usp=drive_link).
+
+The outcome variable, `felony_flag`, is derived from the reported offense type, indicating whether a reported crime is classified as a felony. This classification task is critical, as felonies typically represent more serious crimes and require distinct responses in terms of police allocation. Our goal is to build a predictive model that helps law enforcement deploy patrol resources more efficiently by forecasting felony likelihood using supervised machine learning techniques.
+
+To ensure real-world model evaluation, we split the dataset by time: observations from 2019 to 2022 are used for training, while 2023 data is reserved for implementation testing. The detailed data processing and cleaning steps are documented in the Appendix section. The raw data sources are listed in the README.
+
+```{r}
+#| label: Load data
+
+# Load the cleaned and pre-merged dataset combining DC crime data and ACS indicators
+crime_enriched_no_na <- read_csv("data/crime_enriched_acs_nona.csv")
+
+# Select variables of interest for modeling
+keep_vars <- c(
+  "felony_flag", # outcome variable
+  "x", "y", "latitude", "longitude", "year",
+  "shift", "method", "tract", "report_date_parsed",
+
+  # GIS contextual features
+  "in_liquor_moratorium_zone", "nearest_liquorstore_dist", "near_liquorstore_200m",
+  "near_wifi_100m", "nearest_wifi_dist",
+  "in_lowfood_zone",
+  "nearest_grocery_dist", "near_grocery_300m",
+  "nearest_bank_dist",
+  "near_bank_250m", 
+  "in_vending_zone", 
+  "police_sector", 
+  "in_military_base",
+
+  # ACS socioeconomic features
+  "median_income", "poverty_rate", "unemployed_rate", 
+  "singlemom_pct",
+  "renter_pct", "no_vehicle_pct", 
+  "black_pct", "hispanic_pct","foreign_born_pct", 
+  "hsplus_pct", 
+  "under18_pct", "age65plus_pct"
+)
+
+
+# Keep only selected variables
+crime_enriched_small <- crime_enriched_no_na |> 
+  select(all_of(keep_vars))
+
+# Define training data (2019-2022)
+crime_enriched_mod <- crime_enriched_small |>
+  filter(year >= 2019, year < 2023)
+
+# Define implementation/test data (2023)
+crime_enriched_implement <- crime_enriched_small |>
+  filter(year == 2023)
+
+# Adjust variable data types for training data
+crime_enriched_mod <- crime_enriched_mod |> 
+  mutate(
+    report_date_parsed = as.Date(report_date_parsed),
+         felony_flag = factor(felony_flag)
+         )
+
+# Adjust variable data types for implementation data
+crime_enriched_implement <- crime_enriched_implement |> 
+  mutate(
+    report_date_parsed = as.Date(report_date_parsed),
+         felony_flag = factor(felony_flag)
+         )
+
+```
+
+## Split Data
+
+```{r}
+#| label: Split data
+set.seed(123)
+
+crime_split <- initial_split(crime_enriched_mod, prop = 0.8, strata = felony_flag)
+
+crime_train <- training(crime_split)
+
+crime_test <- testing(crime_split)
+```
+
+*Note: This train-test split is performed only on data from 2019 to 2022. The year 2023 is held out separately for final implementation testing, simulating real-world deployment.*
+
+## EDA on Training Set
+
+First, let's examine the distribution of the outcome variable `felony_flag`.
+
+```{r}
+#| label: EDA
+# Check class imbalance in the target variable
+crime_train |> 
+  count(felony_flag) |> 
+  mutate(pct = n / sum(n))
+```
+
+According to the table, about 30% of crimes in the training set are felonies, while 70% are non-felonies. This class imbalance could affect how the model learns. We'll apply a downsampling method to help the model treat both classes fairly during training.
+
+Second, we explore whether felony crimes are more likely on specific days of the week by plotting the proportion of crimes that are felonies for each weekday.
+
+```{r}
+#| label: felony-by-weekday
+crime_train |> 
+  mutate(dow = lubridate::wday(report_date_parsed, label = TRUE)) |> 
+  group_by(dow) |> 
+  summarize(felony_rate = mean(as.numeric(as.character(felony_flag)))) |> 
+  ggplot(aes(x = dow, y = felony_rate, fill = dow)) +
+  geom_col() +
+  scale_fill_manual(values = rep("steelblue", 7)) + 
+  labs(
+    title = "Felony Rate by Weekday",
+    x = "Day of Week",
+    y = "Proportion of Felony"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    text = element_text(family = "serif") 
+  )
+
+```
+
+The plot shows felonies are slightly more frequent on weekends compared to weekdays.
+
+Third, we assess whether ACS5 predictors we selected relate meaningfully to outcome variable `felony_flag`. Here we focus on `poverty_rate`.
+
+```{r}
+#| label: poverty-logit-smooth
+ggplot(crime_train, aes(x = poverty_rate, y = as.numeric(as.character(felony_flag)))) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), se = TRUE, color = "steelblue") +
+  labs(
+    title = "Probability of Felony by Poverty Rate",
+    x = "Poverty Rate",
+    y = "Estimated Probability of Felony"
+  ) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "serif") 
+  )
+
+```
+
+Using a logistic smoother to examine the relationship between poverty rate and the likelihood of felony classification, the plot shows a clear positive association: as poverty increases, the probability of a crime being classified as a felony also rises.
+
+Furthermore, we calculate average felony rates by census tract and display them on a choropleth map in order to examine geographic variation in felony risk.
+
+```{r}
+#| label: map-felony-by-tract
+
+dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
+
+tract_felrate <- crime_train |>
+  group_by(tract) |>
+  summarize(
+    felony_rate = mean(as.numeric(as.character(felony_flag)))
+  )
+
+tract_sf_joined <- dc_tract_sf |> 
+  left_join(tract_felrate, by = c("TRACTCE" = "tract"))
+
+ggplot(tract_sf_joined) +
+  geom_sf(aes(fill = felony_rate), color = "white", size = 0.2) +
+    scale_fill_gradient(
+    low = "#d6e4f0",   
+    high = "#274472",
+    na.value = "grey90"
+  ) +
+  labs(title = "Felony Rate by Census Tract") +
+  theme_classic() +
+  theme(
+    text = element_text(family ="serif")
+  )
+```
+
+As shown in the map, felony rates are unevenly distributed across D.C. The southern and eastern tracts report substantially higher proportions of felony incidents, while felony rates are lower in northern areas.
+
+Also, we found some tracts appear as missing (shaded grey), indicating that no valid felony rate was computed. To confirm which tracts were dropped, we checked for unmatched tract codes between the shapefile and our dataset:
+
+```{r}
+# Check for missing tracts
+setdiff(dc_tract_sf$TRACTCE, crime_train$tract)
+
+setdiff(dc_tract_sf$TRACTCE, crime_enriched_mod$tract)
+```
+
+The same three tracts `980000`, `009511`, and `000201` are absent from both `crime_train` and `crime_enriched_mod`. This likely stems from aggressive NA removal strategy during the merge of DC Open Data and ACS data. For now, we flag these tracts as missing. In our final project, we plan to revisit this step and apply more robust data imputation methods.
+
+Lastly, we plot each crime by its location to spot patterns across the city. Because there are too many points for a static map, we use an interactive one. Red dots are felonies. Blue dots are non-felonies.
+
+```{r}
+#| label: interactive-map
+
+plot_ly(
+  data = crime_train,
+  x = ~longitude,
+  y = ~latitude,
+  type = "scattergl",
+  mode = "markers",
+  color = ~felony_flag,
+  colors = c("blue", "red"),
+  text = ~paste("Felony:", felony_flag),
+  marker = list(size = 2, opacity = 0.5)
+) |>
+  layout(
+    title = list(
+      text = "Interactive Felony Crime Map (DC)",
+      font = list(family = "serif", size = 18)
+    ),
+    xaxis = list(
+      title = "Longitude",
+      zeroline = FALSE,
+      showgrid = FALSE,
+      font = list(family = "serif"),
+      titlefont = list(family = "serif")
+    ),
+    yaxis = list(
+      title = "Latitude",
+      zeroline = FALSE,
+      showgrid = FALSE,
+      scaleanchor = "x",
+      font = list(family = "serif"),
+      titlefont = list(family = "serif")
+    ),
+    margin = list(l = 40, r = 40, b = 40, t = 60),
+    showlegend = FALSE
+  )
+
+```
+
+## Select Error Metric
+
+In this classification task, the outcome variable is `felony_flag`, indicating whether a reported crime is classified as a felony. We aim to build a predictive model that helps law enforcement allocate patrol resources more efficiently by identifying potential felony incidents in advance.
+
+For this binary classification problem, we propose to use `1 − Recall` as our main evaluation metric, which intuitively represents the share of felonies the model fails to detect:
+
+$$
+1 - \text{Recall} = 1 - \frac{\text{TP}}{\text{TP} + \text{FN}} = \frac{\text{FN}}{\text{TP} + \text{FN}}
+$$
+
+This metric directly reflects how often the model misses serious crimes. Since missing a felony is riskier than flagging a non-felony. Our goal is to keep `1 − Recall` as low as possible. In practice, we would aim for a `1 − Recall` below 0.2, meaning the model correctly identifies at least 80% of actual felony cases.
+
+Although metrics like accuracy and `ROC AUC` provide an overall picture, they may be misleading under class imbalance. Here, felonies represent about 30% of cases, so a model could achieve high accuracy while failing to catch most felonies.
+
+In this context, a `false negative` (missed felonies) is more costly than a `false positive` (flagging non-felonies). A false positive might result in unnecessary police allocation, which is manageable. While a false negative may mean failing to prevent or respond to a serious crime, posing higher social and safety costs.
+
+# Come up with Models
+
+Three model specifications are as below. Each model uses different combinations of feature sets, pre-processing (recipe) and algorithms, so that we can compare their effectiveness and usefulness in the forth part.
+
+## Model 1: Logistic Regression with LASSO
+
+This model uses logistic regression with L1 regularization to predict felony likelihood, prioritizing interpretability and simplicity. It focuses on demographic and temporal predictors that reflect structural and situational risk. The L1 penalty helps reduce noise by shrinking less relevant variables toward zero.
+
+We include seven ACS-derived variables: `poverty rate`, `renter share`, `Black and Hispanic population percentages`, `foreign-born share`, and `the proportions of residents under 18 and over 65`. We also include two crime-level factors: `police shift` and `method of offense`.
+
+Preprocessing steps include:
+
+```         
+- Converting weekday and day-of-year into features from the report date
+
+- One-hot encoding categorical variables
+
+- Standardizing numeric variables
+
+- Downsampling to address class imbalance
+```
+
+The specific recipe is as below:
+
+```{r}
+#| label: crime_rec_log
+crime_rec_log <- recipe(felony_flag ~ poverty_rate + renter_pct + 
+                          black_pct + hispanic_pct + foreign_born_pct + 
+                          under18_pct + age65plus_pct +
+                          shift + method + report_date_parsed,
+                        data = crime_train) |>
+  step_downsample(felony_flag) |>
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(report_date_parsed) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors()) 
+
+```
+
+The specification and workflow is as below:
+
+```{r}
+#| label: model1-spec-wf
+
+log_spec <- logistic_reg(
+  mode = "classification",
+  penalty = tune(), # L1 penalty strength (lambda)
+  mixture = 1 # 1 means LASSO (L1 only)
+) |> 
+  set_engine("glmnet")
+
+log_wf <- workflow() |> 
+  add_model(log_spec) |> 
+  add_recipe(crime_rec_log)
+
+```
+
+## Model 2: Random Forest with Spatial Features
+
+This model focuses on spatial context and aims to detect felony patterns based on location, proximity to public infrastructure and tract-level zoning conditions. Unlike Model 1, we intentionally exclude demographic variables to isolate the predictive power of GIS features.
+
+The predictors include: `tract`, `police shift` and `method`, proximity to liquor stores, grocery stores, banks, public WiFi zones, vending zones, military bases, and food access zones. These variables capture the built environment and local regulations that may influence criminal activity.
+
+Preprocessing includes removing high correlated variables, converting categorical variables to dummies, normalizing numeric variables, extracting temporal signals and downsampling to reduce class imbalance. We retain `tract` as a spatial unit, based on earlier EDA results showing geographic variation in felony rates. This model uses a Random Forest from the `ranger` package. It handles nonlinear relationships and complex interactions among predictors well. We may tune settings like the number of trees or how many variables are used at each split later to improve accuracy.
+
+The specific recipe is as below:
+
+```{r}
+#| label: crime_rec_rf
+crime_rec_rf <- recipe(felony_flag ~ tract + shift + method + 
+                         report_date_parsed +
+                         in_liquor_moratorium_zone + 
+                         nearest_liquorstore_dist + near_liquorstore_200m +
+                         near_wifi_100m + nearest_wifi_dist +
+                         in_lowfood_zone + 
+                         nearest_grocery_dist + near_grocery_300m +
+                         nearest_bank_dist + near_bank_250m +
+                         in_vending_zone + police_sector + in_military_base,
+                       data = crime_train) |>
+  step_downsample(felony_flag) |>
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(report_date_parsed) |>
+  step_corr(all_numeric_predictors(), threshold = 0.9) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors()) 
+```
+
+The specification and workflow is as below:
+
+```{r}
+#| label: model2-spec-wf
+rf_spec <- rand_forest(
+  mtry = tune(), # number of variables sampled at each split (to be tuned)
+  trees = 100, # total number of trees (fixed for now)
+  min_n = tune() # minimum number of observations in a node (to be tuned)
+) |>
+  set_engine("ranger", importance = "impurity") |>
+  set_mode("classification")
+
+rf_wf <- workflow() |>
+  add_model(rf_spec) |>
+  add_recipe(crime_rec_rf)
+
+```
+
+## Model 3: XGBoost with All Features
+
+This model maximizes predictive power by incorporating the full set of spatial, socioeconomic, and temporal predictors available in the dataset. Unlike Models 1 and 2, which focus on interpretability or spatial patterns, this model includes feature broadly and lets the boosting algorithm handle interactions and variable selection.
+
+The predictors include: 1. Spatial and Proximity Features: `in_liquor_moratorium_zone`, `nearest_liquorstore_dist`, `near_liquorstore_200m`, `near_wifi_100m`, `nearest_wifi_dist`, `in_lowfood_zone`, `nearest_grocery_dist`, `near_grocery_300m`, `nearest_bank_dist`, `near_bank_250m`, `in_vending_zone`, `police_sector`, `in_military_base`.
+
+2.  Demographic and Socioeconomic Features from ACS: `median_income`, `poverty_rate`, `unemployed_rate`, `singlemom_pct`, `renter_pct`, `no_vehicle_pct`, `black_pct`, `hispanic_pct`, `foreign_born_pct`, `hsplus_pct`, `under18_pct`, `age65plus_pct`.
+
+3.  Time and Categorical Contextual Features: `shift`, `method`, `tract`, `report_date_parsed`.
+
+Preprocessing includes removing high correlated variables, converting categorical variables to dummies, normalizing numeric variables, extracting temporal signals and downsampling to reduce class imbalance. We use the `XGBoost` algorithm,
+
+which can capture complex nonlinear interactions and works well with tabular data. It supports regularization and tree-based boosting, making it a strong candidate when overfitting is a concern.
+
+The specific recipe is as below:
+
+```{r}
+#| label: crime_rec_xgb
+crime_rec_xgb <- recipe(felony_flag ~ ., data = crime_train) |>
+  step_downsample(felony_flag) |>
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(
+    x, y, latitude, longitude, year, report_date_parsed
+  ) |>
+  step_nzv(all_predictors()) |>
+  step_corr(all_numeric_predictors(), threshold = 0.9) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors()) 
+
+```
+
+The specification and workflow is as below:
+
+```{r}
+#| label: model3-spec-wf
+xgb_spec <- boost_tree(
+  mode = "classification",
+  trees = 100, # total number of trees (fixed)
+  tree_depth = tune(), # max depth of each tree (to be tuned)
+  learn_rate = tune(), # learning rate (to be tuned)
+  loss_reduction = tune() # min loss reduction to split further (to be tuned)
+) |>
+  set_engine("xgboost")
+
+xgb_wf <- workflow() |>
+  add_model(xgb_spec) |>
+  add_recipe(crime_rec_xgb)
+```
+
+# Estimation
+
+We use 5-fold cross-validation and tune the L1 penalty (`penalty`) to find the best balance between model complexity and predictive performance. Our tuning metric is `1 - Recall`, measuring model performance on minimizing false negatives.
+
+```{r}
+#| label: model1-estimation
+# Create a metric set that includes 1 - Recall
+custom_metrics <- metric_set(recall, roc_auc, accuracy)
+
+# Set up 5-fold cross-validation
+set.seed(123)
+crime_folds <- vfold_cv(crime_train, v = 5, strata = felony_flag)
+
+# Define the tuning grid for L1 penalty
+lambda_grid <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+# Tune the logistic regression model
+log_res <- tune_grid(
+  object = log_wf,
+  resamples = crime_folds,
+  grid = lambda_grid,
+  metrics = custom_metrics,
+  control = control_grid(save_pred = TRUE)
+)
+
+# Show top results by 1-recall
+log_res |> 
+  collect_metrics() |> 
+  filter(.metric == "recall") |> 
+  mutate(one_minus_recall = 1 - mean) |> 
+  arrange(one_minus_recall)
+
+# Select best bundle of hyperparameters
+best_log <- select_best(log_res, metric = "recall")
+best_log
+
+# Last fit with best hyperparameters bundle
+final_log_wf <- finalize_workflow(log_wf, best_log)
+final_log_fit <- fit(final_log_wf, data = crime_train)
+
+```
+
+# Interpretation
+
+## Interpret the results
+
+### Vraible Importance
+
+First, let's take a look at the variable importance.
+
+```{r}
+# Extract fitted model from final workflow
+log_model <- extract_fit_parsnip(final_log_fit)
+
+# Plot variable importance
+vip(log_model, num_features = 20)
+```
+
+The plot shows that `offense method` and `police shift` are the most important predictors. Features like `method_OTHERS`, `method_KNIFE` and `shift_MIDNIGHT` strongly contribute to felony predictions. Most temporal and demographic variables like `black_pct`, `foreign_born_pct` have much lower influence. This shows that situational factors of how the crime happened and when it happened carry more predictive weight than background demographic characteristics in this model.
+
+Next, let's assess our tuned logistic regression model using both the test set (from 2019–2022) and the implementation set (from 2023). We focus on the model's ability to identify felony incidents, particularly minimizing false negatives.
+
+### In-sample Performance on Test Set
+
+We apply the trained model to the hold-out test set and calculate standard classification metrics.
+
+```{r}
+#| label: test-eval
+# Apply the recipe and model to crime_test
+crime_test_results <- predict(final_log_fit, new_data = crime_test, type = "prob") |> 
+  bind_cols(predict(final_log_fit, new_data = crime_test)) |>
+  bind_cols(crime_test |> select(felony_flag))
+
+# Evaluate on test set
+metrics_test <- crime_test_results |>
+  yardstick::metrics(truth = felony_flag, estimate = .pred_class)
+
+# Recall and 1 - Recall
+recall_val <- recall(data = crime_test_results, truth = felony_flag, estimate = .pred_class)$.estimate
+one_minus_recall_val <- 1 - recall_val
+
+# Print metrics
+metrics_test
+recall_val
+one_minus_recall_val
+```
+
+The model achieves an `accuracy` of 78.4% and a `1 − Recall` of only 0.0021 on the test set. This means fewer than 0.3% of true felonies are misclassified as non-felonies. This is crucial in a public safety context where failing to detect a felony could result in inadequate response.
+
+### Out-of-sample Generalization to 2023 Implementation Set
+
+We then test the model on unseen 2023 data to evaluate its generalization in real-world applicability.
+
+```{r}
+#| label: implement-eval
+# Apply the recipe and model to crime_enriched_implement
+crime_implement_results <- predict(final_log_fit, new_data = crime_enriched_implement, type = "prob") |> 
+  bind_cols(predict(final_log_fit, new_data = crime_enriched_implement)) |>
+  bind_cols(crime_enriched_implement |> select(felony_flag))
+
+# Evaluate on implementation set
+metrics_implement <- crime_implement_results |>
+  metrics(truth = felony_flag, estimate = .pred_class)
+
+# Recall and 1 - Recall
+recall_val_impl <- recall(data = crime_implement_results, truth = felony_flag, estimate = .pred_class)$.estimate
+one_minus_recall_val_impl <- 1 - recall_val_impl
+
+# Print metrics
+metrics_implement
+recall_val_impl
+one_minus_recall_val_impl
+```
+
+On the implementation set, the model maintains a recall of 99.6% and an accuracy of 72.8%, with a `1 − Recall` of 0.0039. This confirms the model generalizes well and continues to flag nearly all felony cases, even in new data.
+
+In conclusion, the model is effective because it captures the majority of serious crimes with very low false negatives. In policing strategy, this is far more important than overall accuracy. The model's simplicity and high recall make it practical for daily patrol planning and hotspot targeting.
+
+## Improve Model with Different Features and Modeling Options
+
+We explore two different combinations of feature engineering and modeling options to improve our initial regularized logistic regression model, which focused on demographic and temporal features.
+
+First, we test Model 2 which replaces demographics with spatial features such as proximity to liquor stores, grocery stores and banks, as well as tract, special zones like military bases and vending areas. These geographical indicators may capture hot-spots with high felony risk that demographic variables may miss in Model 1. The model shifts from logistic regression to random forest, which handles nonlinear patterns and variable interactions better. It requires less preprocessing and includes tuning for `mtry` and `min_n` to boost performance.
+
+Second, we try out Model 3, which keeps all features from Model 1 and Model 2, including demographics, spatial context and timing. It lets the model learn the best combinations without us limiting scope. This helps test if more context leads to better predictions. We use XGBoost for its ability to learn complex patterns with regularization. It improves on Model 1 by tuning `tree depth`, `learning rate`, and `loss reduction`, allowing better balance between fit and generalization.
+
+### Model 2 Estimation with Cross-Validation
+
+```{r}
+#| label: model2-estimation
+
+# Define a metric set
+custom_metrics <- metric_set(recall, accuracy, roc_auc)
+
+# Create resampling folds
+set.seed(123)
+crime_folds <- vfold_cv(crime_train, v = 5, strata = felony_flag)
+
+# Define a random grid of hyperparameters for tuning 
+set.seed(123)
+rf_grid <- grid_random(
+  mtry(range = c(3, 10)),
+  min_n(range = c(2, 10)),
+  size = 5
+)
+
+# Tune the model
+rf_res <- tune_grid(
+  rf_wf,
+  resamples = crime_folds,
+  grid = rf_grid,
+  metrics = custom_metrics,
+  control = control_grid(save_pred = TRUE)
+)
+
+# Select best hyperparameters combinations by recall
+best_rf <- select_best(rf_res, metric = "recall")
+
+# Finalize the model
+final_rf_wf <- finalize_workflow(rf_wf, best_rf)
+final_rf_fit <- fit(final_rf_wf, data = crime_train)
+
+```
+
+### Model 2 Evaluate on Test and Implementation Sets
+
+```{r}
+# Extract fitted model from final workflow
+rf_model <- extract_fit_parsnip(final_rf_fit)
+
+# Plot top 20 important variables
+vip(rf_model, num_features = 20)
+
+```
+
+The Random Forest model shows a different importance pattern than the logistic model. As seen in the plot above, crime-related features like `method_OTHERS` dominate, followed by temporal seasonality features (`yday_sin`, `yday_cos`, `yday`) and spatial proximity variables (`nearest_bank_dist`, `nearest_liquorstore_dist`, `nearest_grocery_dist`, \``nearest_grocery_wifi`). This suggests that environmental context and time-of-year carry more predictive weight than demographics like `black_pct` in this model.
+
+```{r}
+# Predict on test set
+rf_test_results <- predict(final_rf_fit, new_data = crime_test, type = "prob") |> 
+  bind_cols(predict(final_rf_fit, new_data = crime_test)) |>
+  bind_cols(crime_test |> select(felony_flag))
+
+# Metrics on test set
+metrics_test_rf <- rf_test_results |> 
+  metrics(truth = felony_flag, estimate = .pred_class)
+
+recall_rf <- recall(rf_test_results, truth = felony_flag, estimate = .pred_class)$.estimate
+
+one_minus_recall_rf <- 1 - recall_rf
+
+# Print metrics
+metrics_test_rf
+recall_rf
+one_minus_recall_rf
+```
+
+On the test set, this model reaches an `accuracy` of 71.5% and a `recall` of 73.97%. Roughly 26% of actual felonies go undetected according to `1 - Recall`. This means it misses more than a quarter of actual felonies, a substantial decline in sensitivity compared to Model 1. While the Model 2 may capture some useful spatial patterns, it underperforms on its ability to flag serious crimes when compared to the baseline.
 
 ```{r}
 
+# Predict on implementation set
+rf_impl_results <- predict(final_rf_fit, new_data = crime_enriched_implement, type = "prob") |> 
+  bind_cols(predict(final_rf_fit, new_data = crime_enriched_implement)) |>
+  bind_cols(crime_enriched_implement |> select(felony_flag))
+
+# Convert felony_flag to factor and calculate metrics
+metrics_impl_rf <- rf_impl_results |>
+  mutate(felony_flag = factor(felony_flag)) |>
+  metrics(truth = felony_flag, estimate = .pred_class)
+
+# Calculate recall
+recall_rf_impl <- rf_impl_results |>
+  mutate(felony_flag = factor(felony_flag)) |>
+  recall(truth = felony_flag, estimate = .pred_class) |>
+  pull(.estimate)
+
+# 1 - recall
+one_minus_recall_rf_impl <- 1 - recall_rf_impl
+
+# Print metrics
+metrics_impl_rf
+recall_rf_impl
+one_minus_recall_rf_impl
+
+```
+
+On the implementation set, Model 2 shows stronger accuracy (83.4%) but weaker recall (76.8%) than Model 1. Compared to its own test set results, the results improves on the implementation set: `accuracy` rises to 83.4% and `recall` improves to 76.8%, with `1 − Recall` dropping to 0.232. This shows that Model 2 is less stable over time, due to the randomness of spatial signals or the smaller hyperparameter grid we used. To improve this model, we may need a larger tuning search or better feature engineering to stabilize performance.
+
+Model 2 generalizes better in terms of accuracy but struggles with sensitivity and consistency. For real-world use, especially in crime forecasting, a more reliable recall rate is needed.
+
+### Model 3 Estimation with Cross-Validation
+
+```{r}
+# Define a metric set
+custom_metrics <- metric_set(recall, accuracy, roc_auc)
+
+# Create 5-fold resampling folds
+set.seed(123)
+crime_folds <- vfold_cv(crime_train, v = 5, strata = felony_flag)
+
+# Define a random grid for XGBoost hyperparameters 
+set.seed(123)
+xgb_grid <- grid_random(
+  tree_depth(range = c(3, 10)),
+  learn_rate(range = c(0.01, 0.3)),
+  loss_reduction(range = c(0, 1)),
+  size = 5
+)
+
+# Tune the model
+xgb_res <- tune_grid(
+  xgb_wf,
+  resamples = crime_folds,
+  grid = xgb_grid,
+  metrics = custom_metrics,
+  control = control_grid(save_pred = TRUE)
+)
+
+# Select best hyperparameters based on recall
+best_xgb <- select_best(xgb_res, metric = "recall")
+
+# Finalize workflow
+final_xgb_wf <- finalize_workflow(xgb_wf, best_xgb)
+final_xgb_fit <- fit(final_xgb_wf, data = crime_train)
+
+```
+
+### Model 3 Evaluate on Test and Implementation Sets
+
+```{r}
+# Extract and visualize variable importance
+xgb_model <- extract_fit_parsnip(final_xgb_fit)
+
+vip(xgb_model, num_features = 20)
+
+```
+
+The variable importance plot shows `method_OTHERS` and `black_pct` as top drivers, followed by proximity measures like `nearest_bank_dist`, `nearest_liquorstore_dist`, `nearest_grocery_dist`, `nearest_wifi_dist`.
+
+```{r}
+# Apply XGBoost model to test set
+xgb_test_results <- predict(final_xgb_fit, new_data = crime_test, type = "prob") |> 
+  bind_cols(predict(final_xgb_fit, new_data = crime_test)) |>
+  bind_cols(crime_test |> select(felony_flag))
+
+# Evaluate metrics on test set
+metrics_xgb_test <- xgb_test_results |>
+  yardstick::metrics(truth = felony_flag, estimate = .pred_class)
+
+# Compute recall and 1 - recall
+xgb_recall_test <- recall(xgb_test_results, truth = felony_flag, estimate = .pred_class)$.estimate
+
+xgb_one_minus_recall_test <- 1 - xgb_recall_test
+
+# Print metrics
+metrics_xgb_test
+xgb_recall_test
+xgb_one_minus_recall_test
+```
+
+On the test set, Model 3 achieves an `accuracy` of 73.3% and a `recall` of 77.85%, yielding a `1 − Recall` of 0.2215.
+
+```{r}
+# Convert datetime to date to match the training recipe
+crime_enriched_implement <- crime_enriched_implement |> 
+  mutate(report_date_parsed = as.Date(report_date_parsed))
+
+# Apply the model
+xgb_implement_results <- predict(final_xgb_fit, new_data = crime_enriched_implement, type = "prob") |> 
+  bind_cols(predict(final_xgb_fit, new_data = crime_enriched_implement)) |>
+  bind_cols(crime_enriched_implement |> select(felony_flag))
+
+# Evaluate metrics on implementation set
+metrics_xgb_implement <- xgb_implement_results |>
+  mutate(felony_flag = factor(felony_flag)) |>
+  metrics(truth = felony_flag, estimate = .pred_class)
+
+# Compute recall and 1 - recall
+xgb_recall_implement <- xgb_implement_results |>
+  mutate(felony_flag = factor(felony_flag)) |>
+  recall(truth = felony_flag, estimate = .pred_class) |>
+  pull(.estimate)
+
+one_minus_recall_xgb_impl <- xgb_implement_results |>
+  mutate(felony_flag = factor(felony_flag)) |>
+  recall(truth = felony_flag, estimate = .pred_class) |>
+  pull(.estimate) |>
+  {\(x) 1 - x}()
+
+# Print metrics
+metrics_xgb_implement
+xgb_recall_implement
+one_minus_recall_xgb_impl
+
+```
+
+On the implementation set, `accuracy` drops slightly to 73.8%, while `recall` declines to 70.9% with a `1 − Recall` of 0.2905. This suggests moderate sensitivity and stable accuracy, but a relatively high miss rate for felonies.
+
+Compared to Model 1, Model 3 captures less of the actual felonies and is more prone to false negatives. While Model 1 maintained a `1 − Recall` under 0.004, Model 3's miss rate is over 20x higher.
+
+Compared to Model 2, Model 3 performs more consistently in `accuracy` across test and implementation sets, but its `recall` drops more sharply. While adding both spatial and demographic features improves general balance, it does not enhance sensitivity. This suggests the combined model may generalize slightly better overall, but still misses more felonies than Model 1.
+
+### Visualize 3 Models' Performances
+
+```{r}
+metric_plot_df <- tibble(
+  model = rep(c("Log", "Rf", "XGBoost"), each = 2),
+  dataset = rep(c("Test", "Implementation"), times = 3),
+  accuracy = c(
+    0.785, 0.728, # Model 1
+    0.715, 0.834, # Model 2
+    0.733, 0.738 # Model 3
+    ),
+  one_minus_recall = c(
+    0.0021, 0.0039, # Model 1
+    0.2603, 0.2317, # Model 2
+    0.2215, 0.2905 # Model 3
+    )
+  ) |>
+    mutate(dataset = factor(dataset, levels = c("Test", "Implementation")))
+
+# Accuracy
+ggplot(metric_plot_df, aes(x = model, y = accuracy, fill = dataset)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("Test" = "#56B4E9", "Implementation" = "steelblue")) +
+  labs(
+    title = "Accuracy by Model and Dataset",
+    x = "Model",
+    y = "Accuracy"
+  ) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "serif") 
+  )
+
+# 1 - Recall
+ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("Test" = "#56B4E9", "Implementation" = "steelblue")) +
+  labs(
+    title = "1 - Recall by Model and Dataset",
+    x = "Model",
+    y = "1 - Recall"
+  ) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "serif") 
+  )
+
+```
+
+# Appendix
+
+## First Stage: Data Processing (DC Open Data)
+
+### Load crime incident data (2008–2025) from DC Open Data portal
+
+```{r}
+#| eval: false
+#| include: true
+# Read the base
 crime_incidents <- read_csv("data/DC/crime_incidents/Crime_Incidents_in_2008 - 2025.csv")
 
 # Check different categories of crime
@@ -66,10 +893,16 @@ crime_incidents |>
 
 sort(unique(crime_incidents$OFFENSE))
 
-# Clean names
+# Standardize column names for easier downstream referencing
 crime_incidents <- janitor::clean_names(crime_incidents)
+```
 
-# attach felony/not felony flag
+### Create outcome variables
+
+```{r}
+#| eval: false
+#| include: true
+# Attach felony/not felony flag
 crime_incidents <- crime_incidents |>
   mutate(felony_flag = case_when(
     offense %in% c("HOMICIDE", "SEX ABUSE", "ASSAULT W/DANGEROUS WEAPON",
@@ -77,7 +910,7 @@ crime_incidents <- crime_incidents |>
     TRUE ~ 0
   ))
 
-# arrange different levels of serverity of felony
+# Assign a numerical severity score to each felony type for ranking
 crime_incidents <- crime_incidents |>
   mutate(felony_severity = case_when(
     offense == "HOMICIDE" ~ 7,
@@ -89,188 +922,202 @@ crime_incidents <- crime_incidents |>
     offense == "MOTOR VEHICLE THEFT" ~ 1,
     TRUE ~ 0  # not felony
   ))
-
-
-view(crime_incidents)
-
-glimpse(crime_incidents)
-
-
-crime_sf <- st_as_sf(crime_incidents,
-                     coords = c("longitude", "latitude"),
-                     crs = 4326) 
 ```
 
-
+### Add Features
 
 ```{r}
+#| eval: false
+#| include: true
+crime_sf <- st_as_sf(crime_incidents,
+                     coords = c("longitude", "latitude"),
+                     crs = 4326,
+                     remove = FALSE) 
+
+```
+
+#### Liquor
+
+```{r}
+#| eval: false
+#| include: true
+
 # Liquor Moratorium Zone (polygon)
 
-# 1. 读取 shapefile：售酒限制区域（moratorium zones）
+# Read shapefile：alcohol sale restriction areas（moratorium zones）
 liquor_zone_sf <- st_read("data/DC/liquor/Alcoholic_Beverage_and_Cannabis_Administration_Moratorium_Zones/Alcoholic_Beverage_and_Cannabis_Administration_Moratorium_Zones.shp")
 
-# 2. 检查 geometry 类型
-st_geometry_type(liquor_zone_sf)
+# Check geometry type
+# st_geometry_type(liquor_zone_sf)
 table(st_geometry_type(liquor_zone_sf))
 
-# 3. 只保留 polygon 类型
-liquor_zone_sf <- liquor_zone_sf %>%
-  filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON"))
+# Keep only polygon type geometries
+liquor_zone_sf <- liquor_zone_sf |>
+  filter(st_geometry_type(liquor_zone_sf) %in% c("POLYGON", "MULTIPOLYGON"))
 
-# 4. 投影转换为米制（EPSG:3857）——与 crime_m 对齐，便于后续空间判断
+# Convert to metric CRS (EPSG:3857) to align with `crime_m` for subsequent spatial operations
 crime_m <- st_transform(crime_sf, crs = 3857)
 liquor_zone_m <- st_transform(liquor_zone_sf, 3857)
 
-# 5. 空间交集判断：每个 crime 是否落入某个售酒限制区 polygon 中
+# Spatial intersection: check whether each crime falls within any alcohol restriction zone polygon
+
 crime_m$in_liquor_moratorium_zone <- lengths(st_intersects(crime_m, liquor_zone_m)) > 0
 
-# 6. 转为整数型 0/1（便于建模）
+# Convert to integer (0/1) for modeling purposes
 crime_m$in_liquor_moratorium_zone <- as.integer(crime_m$in_liquor_moratorium_zone)
 
-# 7. 查看分布（判断数据合理性）
+# Inspect distribution to assess data validity
 table(crime_m$in_liquor_moratorium_zone)
 
-# 8. 去掉 geometry，转换为 data.frame 继续分析建模用
+# Drop geometry and convert to data.frame for further analysis and modeling
 crime_enriched <- crime_m |>
   st_drop_geometry() |>
   select(everything())
 
-
-
 # Liquor Store Location
 
-# 1. 读取 Liquor 店铺信息的 CSV 文件
+# Read CSV file containing liquor store information
 liquor_csv <- read_csv("data/DC/liquor/Liquor_Licenses.csv")
 
-# 2. check数据结构
+# Check data structure
 # glimpse(liquor_csv)
 
-# 3. 检查坐标字段
+# Check coordinate fields
 summary(liquor_csv$LONGITUDE)
 summary(liquor_csv$LATITUDE)
 table(liquor_csv$STATUS)
 
-# 4. 过滤掉没有经纬度的记录
-liquor_csv_clean <- liquor_csv %>%
-  filter(STATUS == "Active") %>%
-  filter(!is.na(LONGITUDE), !is.na(LATITUDE))  # 原始的缺失值处理
+# Filter out records with missing latitude or longitude
+liquor_csv_clean <- liquor_csv |>
+  filter(STATUS == "Active") |>
+  filter(!is.na(LONGITUDE), !is.na(LATITUDE))  # Handle missing values in the raw data
 
-# 5. 转换为 sf 对象（经纬度系统 EPSG:4326）
+# Convert to sf object with geographic CRS (EPSG:4326)
 liquor_store_sf <- st_as_sf(liquor_csv_clean, coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
 
 # st_geometry_type(liquor_store_sf)
 
-# 6. 转换为米制（EPSG:3857）与 crime_m 对齐
+# Convert to metric CRS (EPSG:3857) to align with `crime_m`
 liquor_store_m <- st_transform(liquor_store_sf, 3857)
 
-# 7. 计算距离矩阵：每条 crime 到所有 liquor store 的距离
+# Compute distance matrix: distances from each crime to all liquor stores
 dist_matrix_liquorstore <- st_distance(crime_m, liquor_store_m)
 
-# 8. 生成特征列
+# Generate feature columns
 
-# 到最近 liquor store 的距离（单位：米）
+# Distance to the nearest liquor store (in meters)
 crime_m$nearest_liquorstore_dist <- apply(dist_matrix_liquorstore, 1, min)
 
-# 是否在 200 米以内有 liquor store
+# Flag indicating if there is a liquor store within 200 meters
 crime_m$near_liquorstore_200m <- apply(dist_matrix_liquorstore, 1, function(x) any(x < 200))
 crime_m$near_liquorstore_200m <- as.integer(crime_m$near_liquorstore_200m)
 
-# 9. 查看分布情况
+# Inspect Distribution
 summary(crime_m$nearest_liquorstore_dist)
 table(crime_m$near_liquorstore_200m)
 
 ```
 
+#### WiFi
 
 ```{r}
+#| eval: false
+#| include: true
 # WiFi spots (point)
 
-# 1. 读取 wifi shapefile
+# Read Wifi shapefile
 wifi_sf <- st_read("data/DC/wireless_hotspots/Wireless_Hotspots_from_DC_Government/Wireless_Hotspots_from_DC_Government.shp")
 
-# 2. 转换为 WGS84（经纬度）
+# Convert to WGS84 geographic CRS (EPSG:4326)
 wifi_sf <- st_transform(wifi_sf, crs = 4326)
 
-# 3. 检查 geometry 类型
-st_geometry_type(wifi_sf)  
+# Check geometry type
+# st_geometry_type(wifi_sf)  
 
-# 4. 转换到米制坐标系（EPSG:3857）进行空间计算
+# Convert to metric CRS（EPSG:3857）for spatial calculations
 wifi_m <- st_transform(wifi_sf, 3857)
 
-# 5. 计算距离矩阵（crime x wifi）
+# Compute distance matrix（crime x wifi）
 dist_matrix_wifi <- st_distance(crime_m, wifi_m)
 
-# 6. 判断每条 crime 是否在 100 米内有 wifi 点
+# Flag whether each crime has a WiFi point within 100 meters
 crime_m$near_wifi_100m <- apply(dist_matrix_wifi, 1, function(x) any(x < 100))
 crime_m$near_wifi_100m <- as.integer(crime_m$near_wifi_100m) 
 
-# 7. 可选：计算最近 wifi 点的实际距离（用于可视化分析）
+# Optional: compute actual distance to nearest WiFi point (for visualization)
 crime_m$nearest_wifi_dist <- apply(dist_matrix_wifi, 1, min)
 
-# 8. 转回普通数据框，便于建模
-crime_enriched <- crime_m %>%
-  st_drop_geometry()
-
-# 查看分布情况
+# Inspect Distribution
 table(crime_m$near_wifi_100m)
 summary(crime_m$nearest_wifi_dist)
 
 ```
 
+#### Low Food Access
 
 ```{r}
+#| eval: false
+#| include: true
 # Low food access (polygon)
-# 1. 读取 low food access shapefile
+# Load low food access shapefile
 lowfood_sf <- st_read("data/DC/low_food_access/Low_Food_Access_Areas/Low_Food_Access_Areas.shp")
 
-# 2. 转换为经纬度
+# Convert to geographic CRS (EPSG:4326)
 lowfood_sf <- st_transform(lowfood_sf, 4326)
 
-st_geometry_type(lowfood_sf)
+# st_geometry_type(lowfood_sf)
 
-# 4. 转换到米制坐标系（EPSG:3857）进行空间计算(仍然是polygon)
+# Convert to metric CRS (EPSG:3857) for spatial calculations (polygons)
 lowfood_m <- st_transform(lowfood_sf, 3857)
-st_geometry_type(lowfood_m)
+# st_geometry_type(lowfood_m)
 
-# 5. 判断是否落入 low-food-access polygon 区域
+# Spatial intersection: determine if within low-food-access polygon area
 crime_m$in_lowfood_zone <- lengths(st_intersects(crime_m, lowfood_m)) > 0
 
-# 6. 转换为 0 / 1，便于后续建模
+# Convert to integer (0/1) for modeling
 crime_m$in_lowfood_zone <- as.integer(crime_m$in_lowfood_zone)
 
-# 7. 查看分布
+# Inspect Distribution 
 table(crime_m$in_lowfood_zone)
 
 ```
 
+#### Grocery Store
+
 ```{r}
+#| eval: false
+#| include: true
 # Grocery Store (point)
-# 读取并转换
+# Load and convert
 grocery_sf <- st_read("data/DC/grocery_store/Grocery_Store_Locations/Grocery_Store_Locations.shp")
 grocery_sf <- st_transform(grocery_sf, 4326)
-st_geometry_type(grocery_sf)
+# st_geometry_type(grocery_sf)
 grocery_m <- st_transform(grocery_sf, 3857)
 
-# 计算距离
+# Calculate distance
 dist_matrix_grocery <- st_distance(crime_m, grocery_m)
 
-# 加入特征
+# Add features
 crime_m$nearest_grocery_dist <- apply(dist_matrix_grocery, 1, min)
 crime_m$near_grocery_300m <- apply(dist_matrix_grocery, 1, function(x) any(x < 300))
 crime_m$near_grocery_300m <- as.integer(crime_m$near_grocery_300m)
 
-# 查看分布情况
+# Inspect distribution
 table(crime_m$near_grocery_300m)
 summary(crime_m$nearest_grocery_dist)
 
 ```
 
+#### Bank
 
 ```{r}
+#| eval: false
+#| include: true
 # Bank Location (point)
 bank_sf <- st_read("data/DC/bank_location/Bank_Locations/Bank_Locations.shp")
 bank_sf <- st_transform(bank_sf, 4326)
-st_geometry_type(bank_sf)
+
+# st_geometry_type(bank_sf)
 bank_m <- st_transform(bank_sf, 3857)
 
 dist_matrix_bank <- st_distance(crime_m, bank_m)
@@ -279,106 +1126,379 @@ crime_m$nearest_bank_dist <- apply(dist_matrix_bank, 1, min)
 crime_m$near_bank_250m <- apply(dist_matrix_bank, 1, function(x) any(x < 250))
 crime_m$near_bank_250m <- as.integer(crime_m$near_bank_250m)
 
-# 查看分布情况
+# Inspect Distribution 
 table(crime_m$near_bank_250m)
 summary(crime_m$nearest_bank_dist)
 ```
 
-
+#### Vending Zone
 
 ```{r}
+#| eval: false
+#| include: true
 # Vending Zone (polygon)
 vending_sf <- st_read("data/DC/street_vending/Street_Vending_Zones/Street_Vending_Zones.shp")
-st_geometry_type(vending_sf)
-vending_sf <- st_transform(vending_sf, 3857)  # polygon 所以只需匹配 crime_m
+
+# st_geometry_type(vending_sf)
+vending_sf <- st_transform(vending_sf, 3857)  
+# Polygons only, so only match against `crime_m
 
 crime_m$in_vending_zone <- lengths(st_intersects(crime_m, vending_sf)) > 0
 crime_m$in_vending_zone <- as.integer(crime_m$in_vending_zone)
 
-# 查看分布情况
+# Inspect distribution
 table(crime_m$in_vending_zone)
 ```
 
-
+#### Police Sector
 
 ```{r}
-crime_enriched <- crime_m %>%
-  st_drop_geometry()
+#| eval: false
+#| include: true
 
-glimpse(crime_enriched)
+# Read the shapefile of police sectors
+police_sector_sf <- st_read("data/DC/police_sector_division/Police_Sectors/Police_Sectors.shp")
 
-write_csv(crime_enriched, "data/crime_enriched.csv")
+# Check geometry type (usually POLYGON or MULTIPOLYGON)
+# table(st_geometry_type(police_sector_sf))
+
+# Convert projection to EPSG:3857 (meters) to match crime_m
+police_sector_m <- st_transform(police_sector_sf, 3857)
+
+# Check if each crime falls within a police sector polygon
+# This will assign the sector name/code to each crime (if available)
+crime_m <- st_join(crime_m, police_sector_m |> 
+                     select(police_sector = SECTOR), left = TRUE)
+
+# Check how many NA (missing sectors)
+# table(!is.na(crime_m$police_sector))  # No NA
+
+table(crime_m$police_sector)
+
+# Optional: Convert to factor (if categorical)
+crime_m$police_sector <- as.factor(crime_m$police_sector)
+
+
 ```
 
+#### Military Base
 
-### Second Stage for Data Processing (ACS Data)
+```{r}
+#| eval: false
+#| include: true
+# Read shapefile of military bases
+military_sf <- st_read("data/DC/military_base/Military_Bases/Military_Bases.shp")
+
+# table(st_geometry_type(military_sf))
+
+# Check and transform CRS to EPSG:3857
+military_m <- st_transform(military_sf, 3857)
+
+# Check if each crime falls inside a military base polygon
+crime_m$in_military_base <- lengths(st_intersects(crime_m, military_m)) > 0
+
+# Convert to 0/1
+crime_m$in_military_base <- as.integer(crime_m$in_military_base)
+
+# Optional summary check
+table(crime_m$in_military_base)
+
+```
+
+### Enriched crime_incidents Data
+
+```{r}
+#| eval: false
+#| include: true
+# Retain original sf object for spatial analysis
+crime_sf_final <- crime_m
+
+# Create modeling dataframe: drop geometry
+crime_enriched <- crime_m |> 
+  st_drop_geometry()
+
+# Export modeling data
+write_csv(crime_enriched, "data/crime_enriched.csv")
+
+crime_enriched <- read_csv("data/crime_enriched.csv")
+```
+
+## Second Stage for Data Processing (ACS Data)
 
 Here we are going to use`tidycensus` package and ACS data to further enrich our data frame. To do so, you need to have a Census API first.
 
+### Set up API for ACS data
+
+If you installed Census API in your R global env once, use this code to check:
 
 ```{r}
-# If you installed Census API in your R global env once, use this code to check:
+#| eval: false
+#| include: true
 Sys.getenv("CENSUS_API_KEY") 
+```
 
-# If not, open "https://api.census.gov/data/key_signup.html" to get one, then:
-# if (!file.exists("~/.Renviron") || !any(grepl("CENSUS_API_KEY", readLines("~/.Renviron")))) {
-#   census_api_key("YOUR_API_KEY_HERE", install = TRUE)
-#   message("API key added. Please restart your R session.")
-# } else {
-#   message("Census API key already installed.")
-# }
+If not, open "https://api.census.gov/data/key_signup.html" to get one, then:
 
+```{r}
+#| eval: false
+#| include: true
+if (!file.exists("~/.Renviron") || !any(grepl("CENSUS_API_KEY", readLines("~/.Renviron")))) {
+  census_api_key("<YOUR_API_KEY_HERE>", install = TRUE)
+  message("API key added. Please restart your R session.")
+} else {
+  message("Census API key already installed.")
+}
+```
 
-years <- 2009:2023  # 5-year ACS 数据最早从 2009 开始有用
+Check for each variable of ACS5 using URL:"<https://api.census.gov/data/year/acs/acs5/variables.html>"
 
-acs_list <- map_dfr(years, function(y) {
-  get_acs(geography = "tract",
-          state = "DC",
-          year = y,
-          variables = c(median_income = "B19013_001", 
-                        poverty_rate = "B17001_002"),
-          survey = "acs5",
-          geometry = FALSE) %>%
+You can fill number into year from 2009 - 2023. For example, ACS5(2005 - 2009)'s link is: <https://api.census.gov/data/2009/acs/acs5/variables.html>
+
+```{r}
+#| eval: false
+#| include: true
+# Extract predictors of interest
+
+acs_vars_named <- c(
+  # econ and employment
+  median_income = "B19013_001",
+  poverty_total = "B17001_001",
+  poverty_count = "B17001_002",
+  unemployed = "B23025_005",
+  labor_force = "B23025_003",
+
+  # race and ethnicity
+  black_count = "B02001_003",
+  total_race = "B02001_001",
+  hispanic_count = "B03003_003",
+  total_ethnicity = "B03003_001",
+  foreign_born = "B05002_013",
+  total_pop_fb = "B05002_001",
+
+  # household resources
+  renter = "B25003_003",
+  total_tenure = "B25003_001",
+  no_vehicle = "B08201_002",
+  total_vehicle = "B08201_001",
+
+  # family structure
+  single_mom = "B11003_010",
+  total_family = "B11003_001",
+
+  # education：high school + 
+  edu_hsgrad = "B15003_017",
+  edu_somecollege = "B15003_018",
+  edu_associate = "B15003_019",
+  edu_bachelor = "B15003_020",
+  edu_master = "B15003_021",
+  edu_professional = "B15003_022",
+  edu_doctorate = "B15003_023",
+  edu_other1 = "B15003_024",
+  edu_other2 = "B15003_025",
+  total_edu = "B15003_001",
+
+  # Age：< 18 & 65 + 
+  # male < 18
+  under18_m1 = "B01001_003", 
+  under18_m2 = "B01001_004",
+  under18_m3 = "B01001_005", 
+  under18_m4 = "B01001_006",
+  # female <18
+  under18_f1 = "B01001_027", 
+  under18_f2 = "B01001_028",
+  under18_f3 = "B01001_029", 
+  under18_f4 = "B01001_030",
+  # male 65+
+  age65plus_m1 = "B01001_020", 
+  age65plus_m2 = "B01001_021",
+  age65plus_m3 = "B01001_022", 
+  age65plus_m4 = "B01001_023",
+  age65plus_m5 = "B01001_024", 
+  age65plus_m6 = "B01001_025",
+  # female 65+
+  age65plus_f1 = "B01001_044", 
+  age65plus_f2 = "B01001_045",
+  age65plus_f3 = "B01001_046", 
+  age65plus_f4 = "B01001_047",
+  age65plus_f5 = "B01001_048", 
+  age65plus_f6 = "B01001_049",
+
+  # total population
+  total_age = "B01001_001" # total population of different age
+)
+
+```
+
+### Variable Availability Check (2009-2023)
+
+Before we actually put our arguments into data extraction, we can first check if they are available across 2009-2023 then adjust our args into a proper range.
+
+```{r}
+#| eval: false
+#| include: true
+# Function: check if variables are valid for a given year
+check_vars <- function(year, var_vector) {
+  cat("Checking year:", year, "...\n")
+  available <- load_variables(year, "acs5", cache = TRUE)
+  var_names <- names(var_vector)
+  matched <- var_vector %in% available$name
+  return(data.frame(
+    year = year,
+    var_label = var_names,
+    var_code = var_vector,
+    exists = matched
+  ))
+}
+
+# Check each year from 2009 to 2023
+var_check_df <- purrr::map_dfr(2009:2023, ~check_vars(.x, acs_vars_named))
+
+# Identify which variables are missing in which years
+missing_table <- var_check_df |> 
+  filter(!exists) |> 
+  arrange(var_label, year)
+
+```
+
+### Starting Data Retrieval from 2012
+
+Our checks show that data from 2009 to 2011 is incomplete. Since incomplete data cannot yield reliable predictions and we aim to forecast for the most recent year (2023), we will begin retrieving data from 2012 onward.
+
+```{r}
+#| eval: false
+#| include: true
+years <- 2012:2023 # 5-year; available from 2009-2023
+
+acs_raw <- map_dfr(years, function(y) {
+  get_acs(
+    geography = "tract",
+    state = "11",
+    year = y,
+    variables = acs_vars_named,
+    survey = "acs5",
+    geometry = FALSE
+  ) |>
     mutate(year = y)
 })
 
-
-
-
-
-
 ```
 
-### Final Stage for Data Processing (NIBRS Data)
-
-## Come up with Models
-
-
+Merge into `crime_enriched`
 
 ```{r}
+#| eval: false
+#| include: true
+acs_wide <- acs_raw |>
+  select(GEOID, year, variable, estimate) |>
+  pivot_wider(
+    names_from = variable,
+    values_from = estimate
+  )
+
+acs_processed <- acs_wide |>
+  mutate(
+    # Proportion variables
+    poverty_rate = poverty_count / poverty_total,
+    black_pct = black_count / total_race,
+    hispanic_pct = hispanic_count / total_ethnicity,
+    foreign_born_pct = foreign_born / total_pop_fb,
+    renter_pct = renter / total_tenure,
+    no_vehicle_pct = no_vehicle / total_vehicle,
+    singlemom_pct = single_mom / total_family,
+    unemployed_rate = unemployed / labor_force,
+
+    # Education proportion (sum of high school and above)
+    hsplus_total = edu_hsgrad + edu_somecollege + edu_associate + edu_bachelor + edu_master + edu_professional + edu_doctorate + edu_other1 + edu_other2,
+    hsplus_pct = hsplus_total / total_edu,
+
+    # Age structure proportions
+    under18_total = under18_m1 + under18_m2 + under18_m3 + under18_m4 + under18_f1 + under18_f2 + under18_f3 + under18_f4,
+    under18_pct = under18_total / total_age,
+
+    age65plus_total = age65plus_m1 + age65plus_m2 + age65plus_m3 + age65plus_m4 + age65plus_f1 + age65plus_f2 + age65plus_f3 + age65plus_f4 + age65plus_m5 + age65plus_m6 + age65plus_f5 + age65plus_f6,
+    age65plus_pct = age65plus_total / total_age,
+    
+    # Create tract col for join
+    tract = stringr::str_sub(GEOID, -6)
+  )
 
 
+# Select required fields from `crime_enriched`
+crime_enriched <- crime_enriched |>
+  mutate(
+    # report_dat` is a string like "2008/12/12 22:00:00+00"
+    # Parse with `ymd_hms()` to automatically detect timezone
+    report_date_parsed = ymd_hms(report_dat),
+    year = year(report_date_parsed)
+  ) |>
+    rename(tract = census_tract) #rename census_tract for join
+
+
+# Perform left join by tract and year
+crime_enriched <- left_join(
+  crime_enriched,
+  acs_processed,
+  by = c("tract" = "tract", "year" = "year")
+)
+
+
+write_csv(crime_enriched, "data/crime_enriched_with_acs.csv")
+
+crime_enriched <- read_csv("data/crime_enriched_with_acs.csv")
 
 ```
 
-## Estimation
-
+Last process to keep valid data:
 
 ```{r}
+#| eval: false
+#| include: true
+crime_enriched_filtered <- crime_enriched |>
+  filter(year >= 2012, year <= 2023)
 
-
+# Inspect which variables for missing values
+colSums(is.na(crime_enriched_filtered))
 
 ```
 
+### Handling Missing Values
 
-## Interpretation
-
+During the merge of the DC Open Data and ACS datasets, a large number of missing values (NAs) were introduced. To ensure a clean, reliable input for our model, we therefore dropped all rows containing NA values.
 
 ```{r}
+#| eval: false
+#| include: true
+# Calculate missing value proportion for each column
+na_ratio <- colSums(is.na(crime_enriched_filtered)) / nrow(crime_enriched_filtered)
 
+# Retain columns with missing rate < 30%
+crime_enriched_filtered <- crime_enriched_filtered |>
+  select(which(na_ratio < 0.3))
 
+crime_enriched_no_na <- crime_enriched_filtered |>
+  drop_na()
+
+table(crime_enriched_no_na$year)
+
+write_csv(crime_enriched_no_na, "data/crime_enriched_acs_nona.csv")
+
+crime_enriched_no_na <- read_csv("data/crime_enriched_acs_nona.csv")
 
 ```
+
+## Final Stage for Data Processing (NIBRS Data)
+
+This part is for final project's data and is still in processing. You can skip this part because we won't use NIBSR data for this exercise.
+
+```{r}
+#| eval: false
+#| include: true
+test_rds <- readRDS("data/DC/nibrs/offense/nibrs_offense_segment_2021.rds")
+
+admin_2023 <- readRDS("data/DC/nibrs/admin/nibrs_administrative_segment_2021.rds")
+
+```
+
 
 
 ```{=html}
