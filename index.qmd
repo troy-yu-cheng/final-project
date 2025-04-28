@@ -317,11 +317,13 @@ Although metrics like accuracy and `ROC AUC` provide an overall picture, they ma
 
 In this context, a `false negative` (missed felonies) is more costly than a `false positive` (flagging non-felonies). A false positive might result in unnecessary police allocation, which is manageable. While a false negative may mean failing to prevent or respond to a serious crime, posing higher social and safety costs.
 
-# Come up with Models
+# Binary Classification
+
+## Come up with Models
 
 Three model specifications are as below. Each model uses different combinations of feature sets, pre-processing (recipe) and algorithms, so that we can compare their effectiveness and usefulness in the forth part.
 
-## Model 1: Logistic Regression with LASSO
+### Model 1: Logistic Regression with LASSO
 
 This model uses logistic regression with L1 regularization to predict felony likelihood, prioritizing interpretability and simplicity. It focuses on demographic and temporal predictors that reflect structural and situational risk. The L1 penalty helps reduce noise by shrinking less relevant variables toward zero.
 
@@ -379,7 +381,7 @@ log_wf <- workflow() |>
 
 ```
 
-## Model 2: Random Forest with Spatial Features
+### Model 2: Random Forest with Spatial Features
 
 This model focuses on spatial context and aims to detect felony patterns based on location, proximity to public infrastructure and tract-level zoning conditions. Unlike Model 1, we intentionally exclude demographic variables to isolate the predictive power of GIS features.
 
@@ -432,7 +434,7 @@ rf_wf <- workflow() |>
 
 ```
 
-## Model 3: XGBoost with All Features
+### Model 3: XGBoost with All Features
 
 This model maximizes predictive power by incorporating the full set of spatial, socioeconomic, and temporal predictors available in the dataset. Unlike Models 1 and 2, which focus on interpretability or spatial patterns, this model includes feature broadly and lets the boosting algorithm handle interactions and variable selection.
 
@@ -488,7 +490,7 @@ xgb_wf <- workflow() |>
   add_recipe(crime_rec_xgb)
 ```
 
-# Estimation
+## Estimation
 
 We use 5-fold cross-validation and tune the L1 penalty (`penalty`) to find the best balance between model complexity and predictive performance. Our tuning metric is `1 - Recall`, measuring model performance on minimizing false negatives.
 
@@ -530,11 +532,11 @@ final_log_fit <- fit(final_log_wf, data = crime_train)
 
 ```
 
-# Interpretation
+## Interpretation
 
-## Interpret the results
+### Interpret the results
 
-### Vraible Importance
+#### Vraible Importance
 
 First, let's take a look at the variable importance.
 
@@ -550,7 +552,7 @@ The plot shows that `offense method` and `police shift` are the most important p
 
 Next, let's assess our tuned logistic regression model using both the test set (from 2019–2022) and the implementation set (from 2023). We focus on the model's ability to identify felony incidents, particularly minimizing false negatives.
 
-### In-sample Performance on Test Set
+#### In-sample Performance on Test Set
 
 We apply the trained model to the hold-out test set and calculate standard classification metrics.
 
@@ -577,7 +579,7 @@ one_minus_recall_val
 
 The model achieves an `accuracy` of 78.4% and a `1 − Recall` of only 0.0021 on the test set. This means fewer than 0.3% of true felonies are misclassified as non-felonies. This is crucial in a public safety context where failing to detect a felony could result in inadequate response.
 
-### Out-of-sample Generalization to 2023 Implementation Set
+#### Out-of-sample Generalization to 2023 Implementation Set
 
 We then test the model on unseen 2023 data to evaluate its generalization in real-world applicability.
 
@@ -606,7 +608,7 @@ On the implementation set, the model maintains a recall of 99.6% and an accuracy
 
 In conclusion, the model is effective because it captures the majority of serious crimes with very low false negatives. In policing strategy, this is far more important than overall accuracy. The model's simplicity and high recall make it practical for daily patrol planning and hotspot targeting.
 
-## Improve Model with Different Features and Modeling Options
+### Improve Model with Different Features and Modeling Options
 
 We explore two different combinations of feature engineering and modeling options to improve our initial regularized logistic regression model, which focused on demographic and temporal features.
 
@@ -614,7 +616,7 @@ First, we test Model 2 which replaces demographics with spatial features such as
 
 Second, we try out Model 3, which keeps all features from Model 1 and Model 2, including demographics, spatial context and timing. It lets the model learn the best combinations without us limiting scope. This helps test if more context leads to better predictions. We use XGBoost for its ability to learn complex patterns with regularization. It improves on Model 1 by tuning `tree depth`, `learning rate`, and `loss reduction`, allowing better balance between fit and generalization.
 
-### Model 2 Estimation with Cross-Validation
+#### Model 2 Estimation with Cross-Validation
 
 ```{r}
 #| label: model2-estimation
@@ -652,7 +654,7 @@ final_rf_fit <- fit(final_rf_wf, data = crime_train)
 
 ```
 
-### Model 2 Evaluate on Test and Implementation Sets
+#### Model 2 Evaluate on Test and Implementation Sets
 
 ```{r}
 # Extract fitted model from final workflow
@@ -719,7 +721,7 @@ On the implementation set, Model 2 shows stronger accuracy (83.4%) but weaker re
 
 Model 2 generalizes better in terms of accuracy but struggles with sensitivity and consistency. For real-world use, especially in crime forecasting, a more reliable recall rate is needed.
 
-### Model 3 Estimation with Cross-Validation
+#### Model 3 Estimation with Cross-Validation
 
 ```{r}
 # Define a metric set
@@ -756,7 +758,7 @@ final_xgb_fit <- fit(final_xgb_wf, data = crime_train)
 
 ```
 
-### Model 3 Evaluate on Test and Implementation Sets
+#### Model 3 Evaluate on Test and Implementation Sets
 
 ```{r}
 # Extract and visualize variable importance
@@ -831,7 +833,7 @@ Compared to Model 1, Model 3 captures less of the actual felonies and is more pr
 
 Compared to Model 2, Model 3 performs more consistently in `accuracy` across test and implementation sets, but its `recall` drops more sharply. While adding both spatial and demographic features improves general balance, it does not enhance sensitivity. This suggests the combined model may generalize slightly better overall, but still misses more felonies than Model 1.
 
-### Visualize 3 Models' Performances
+#### Visualize 3 Models' Performances
 
 ```{r}
 metric_plot_df <- tibble(
@@ -879,6 +881,17 @@ ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
   )
 
 ```
+
+
+# Regression Model
+
+## Add felony_rate Column at Tract Level
+
+```{r}
+crime_enriched_mod
+
+```
+
 
 # Appendix
 
