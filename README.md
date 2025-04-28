@@ -46,9 +46,11 @@ eg. I can create a branch named `troy` by `git chechout -b troy`.
 - Save your changes:
 
   ```bash
-  git add .
+  git add <the name of the modified file on your machine>
   git commit -m "Describe what you changed"
   ```
+
+eg. I modified README.md file. I need use code `git add README.md`, `git commit -m "update README"`.
 
 ### 3. Push Your Branch
 
@@ -57,6 +59,8 @@ eg. I can create a branch named `troy` by `git chechout -b troy`.
   ```bash
   git push origin your-branch-name
   ```
+
+eg. After add and commit, I push changes to branch `troy` using `git push origin troy`. 
 
 ### 4. Create a Pull Request
 
@@ -113,6 +117,7 @@ eg. I can create a branch named `troy` by `git chechout -b troy`.
   ```bash
   git branch -d your-branch-name
   ```
+
 eg. I need to use `git branch -d troy` to delete the branch I created.
 
 - (If you see an error, use force delete:)
