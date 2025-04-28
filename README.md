@@ -16,6 +16,122 @@ We train and test on 2019–2022 data, implement on 2023, and the final merged d
 
 **Note: Make sure you installed and loaded all the packadges in [Dependencies](https://github.com/troy-yu-cheng/final-project?tab=readme-ov-file#dependencies) before you run the code in index.qmd file.**
 
+## Pull Request Workflow Quick Reference
+
+### 1. Start a New Branch
+
+- Move to the `main` branch:
+
+  ```bash
+  git checkout main
+  ```
+
+- Pull the latest changes:
+
+  ```bash
+  git pull origin main
+  ```
+
+- Create a new branch for your work:
+
+  ```bash
+  git checkout -b <your-branch-name>
+  ```
+
+eg. I can create a branch named `troy` by `git chechout -b troy`.
+
+### 2. Do Your Work
+
+- Edit, add, or delete files as needed.
+- Save your changes:
+
+  ```bash
+  git add .
+  git commit -m "Describe what you changed"
+  ```
+
+### 3. Push Your Branch
+
+- Push your branch to GitHub:
+
+  ```bash
+  git push origin your-branch-name
+  ```
+
+### 4. Create a Pull Request
+
+- Go to GitHub.
+- GitHub will suggest creating a Pull Request (PR).
+- Click **"Create Pull Request."**
+- Write a simple title and short description.
+- Submit your PR for review.
+- Review the PR to check if there's any code conflict.
+- If there is no conflict:
+  - GitHub will show a green message saying "This branch has no conflicts with the base branch."
+  - You can directly click the "Merge pull request" button.
+  - After that, click "Confirm merge" to complete the pull request.
+  - After merging, GitHub will suggest "Delete branch." Click it to delete the feature branch from GitHub.
+
+- If there is a conflict:
+  - GitHub will show a message saying "This branch has conflicts that must be resolved."
+  - Click "Resolve conflicts" on the GitHub page.
+  - You will see the files with conflicts. GitHub will show the conflicting parts like this:
+
+    ```text
+    <<<<<<< main
+    (the code from the main branch)
+    =======
+    (the code from your branch)
+    >>>>>>> your-branch-name
+    ```
+
+  - Choose which code you want to keep. You can keep the version from `main`, your version, or a mix of both.
+  - Delete the `<<<<<<<`, `=======`, and `>>>>>>>` conflict markers after you fix the code.
+  - After fixing, click "Mark as resolved" on GitHub.
+  - Then click "Commit merge."
+- After all conflicts are resolved and merged, the PR can be approved and completed.
+
+
+### 5. After Your PR is Merged
+
+- Switch back to the `main` branch:
+
+  ```bash
+  git checkout main
+  ```
+
+- Pull the latest version of `main`:
+
+  ```bash
+  git pull origin main
+  ```
+
+### 6. Clean Up Your Old Branch
+
+- After the PR is merged, delete your local branch:
+
+  ```bash
+  git branch -d your-branch-name
+  ```
+eg. I need to use `git branch -d troy` to delete the branch I created.
+
+- (If you see an error, use force delete:)
+
+  ```bash
+  git branch -D your-branch-name
+  ```
+
+---
+
+### Important Notes
+
+- **Never** work directly on the `main` branch.
+- **Always** start a new branch for each feature or fix.
+- **Always** pull the latest `main` before starting new work.
+- **Don't** delete your branch until the PR is fully merged.
+
+---
+
 ## Dependencies
 - R (>= 4.0.0)
 - Packages:
