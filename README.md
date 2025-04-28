@@ -1,12 +1,12 @@
 # Intro2DS Final Proj: Crime Prediction in Washington DC
 
-*Author: Troy Cheng, Ziqiao Shan, Minji Kang, Sarah Krause*
+*Author: Ziqiao Shan, Minji Kang, Sarah Krause*
 
 ## Project Description
 
 Using DC Open Data crime incidents (2008–2025) enriched with spatial features (liquor license moratorium zones, locations and proximity of liquor stores, grocery stores, and banks, public WiFi zones and vending zones, low food access areas, police sector boundaries and military base zones) and tract-level socioeconomic indicators from the ACS5, we build three different types of models to predict 1) the likelihood of a crime being a felony (binary classification); 2) which felony category a crime falls under (multi-classification); 3) what felony/crime rate of a tract in DC will be next year (regression model). We train and test on 2019–2022 data, implement on 2023, and the final merged dataset (crime_enriched_acs_nona.csv) is available via qmd file. 
 
-**Note: Make sure you installed and loaded all the packadges in [Dependencies](https://github.com/troy-yu-cheng/assignment07-stretch?tab=readme-ov-file#dependencies) before you run the code in index.qmd file.**
+**Note: Make sure you installed and loaded all the packadges in [Dependencies](https://github.com/troy-yu-cheng/final-project?tab=readme-ov-file#dependencies) before you run the code in index.qmd file.**
 
 ## Dependencies
 - R (>= 4.0.0)
