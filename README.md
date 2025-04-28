@@ -65,16 +65,17 @@ eg. After add and commit, I push changes to branch `troy` using `git push origin
 ### 4. Create a Pull Request
 
 - Go to GitHub.
-- GitHub will suggest creating a Pull Request (PR).
-- Click **"Create Pull Request."**
+- GitHub will suggest creating a Pull Request (PR), or click `Pull requests` button which is in the same line of the `Code` button and then click `New pull request`.
+- Set the `base` button as `main` branch and set the `compare` button as `<your-branch-name>` branch. Usually, you will see `√ Able to merge`.  
+- Click the green button **"Create Pull Request."**  
 - Write a simple title and short description.
-- Submit your PR for review.
+- Submit your PR for review by clicking `Create pull request`.
 - Review the PR to check if there's any code conflict.
 - If there is no conflict:
   - GitHub will show a green message saying "This branch has no conflicts with the base branch."
-  - You can directly click the "Merge pull request" button.
-  - After that, click "Confirm merge" to complete the pull request.
-  - After merging, GitHub will suggest "Delete branch." Click it to delete the feature branch from GitHub.
+  - You can directly click the `Merge pull request` button.
+  - After that, click `Confirm merge` to complete the pull request.
+  - After merging, GitHub will suggest `Delete branch`. Click it to delete the feature branch from GitHub.
 
 - If there is a conflict:
   - GitHub will show a message saying "This branch has conflicts that must be resolved."
