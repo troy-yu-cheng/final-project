@@ -1,6 +1,6 @@
 # Intro2DS Final Proj: Crime Prediction in Washington DC
 
-*Author: Ziqiao Shan, Minji Kang, Sarah Krause*
+*Author: Troy Cheng, Ziqiao Shan, Minji Kang, Sarah Krause*
 
 ## Project Description
 
