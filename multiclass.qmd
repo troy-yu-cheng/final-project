@@ -1,0 +1,222 @@
+---
+title: "Felony Category Multi-classification"
+author: "Sarah Krause and Minji Kang"
+format:
+  html:
+    embed-resources: true
+editor: visual
+execute:
+  warning: false
+---
+
+```{r}
+library(tidyverse)
+library(readr)
+library(haven)
+library(lubridate)
+library(tidymodels)
+library(tidycensus)
+library(janitor)
+library(sf)
+library(plotly)
+library(themis)
+library(vip)
+library(ranger)
+library(xgboost)
+library(rlang)
+```
+
+```{r}
+# read in the data
+crime <- read_csv("data/crime_enriched_acs_nona.csv")
+```
+
+```{r}
+# Select variables of interest for modeling
+multiclass_vars <- c(
+  "felony_severity", # outcome variable
+  "x", "y", "latitude", "longitude", "year",
+  "shift", "method", "tract", "report_date_parsed",
+
+  # GIS contextual features
+  "in_liquor_moratorium_zone", "nearest_liquorstore_dist", "near_liquorstore_200m",
+  "near_wifi_100m", "nearest_wifi_dist",
+  "in_lowfood_zone",
+  "nearest_grocery_dist", "near_grocery_300m",
+  "nearest_bank_dist",
+  "near_bank_250m", 
+  "in_vending_zone", 
+  "police_sector", 
+  "in_military_base",
+
+  # ACS socioeconomic features
+  "median_income", "poverty_rate", "unemployed_rate", 
+  "singlemom_pct",
+  "renter_pct", "no_vehicle_pct", 
+  "black_pct", "hispanic_pct","foreign_born_pct", 
+  "hsplus_pct", 
+  "under18_pct", "age65plus_pct"
+)
+
+# Keep only selected variables
+crime_multiclass <- crime |> 
+  select(all_of(multiclass_vars))
+
+# Define training data (2019-2022)
+crime_multiclass_small <- crime_multiclass |>
+  filter(year >= 2019, year < 2023)
+
+# Define implementation/test data (2023)
+crime_multiclass_implement <- crime_multiclass |>
+  filter(year == 2023)
+
+# Adjust variable data types for training data
+crime_multiclass_small <- crime_multiclass_small |> 
+  mutate(
+    report_date_parsed = as.Date(report_date_parsed),
+         felony_severity = factor(felony_severity)
+         )
+
+# Adjust variable data types for implementation data
+crime_multiclass_implement <- crime_multiclass_implement |> 
+  mutate(
+    report_date_parsed = as.Date(report_date_parsed),
+         felony_severity = factor(felony_severity)
+         )
+```
+
+## Split Data
+
+```{r}
+set.seed(123)
+
+multiclass_split <- initial_split(crime_multiclass_small, prop = 0.8, strata = felony_severity)
+
+multiclass_train <- training(multiclass_split)
+
+multiclass_test <- testing(multiclass_split)
+```
+
+## EDA on Training Set
+
+First, let's examine the distribution of the outcome variable `felony_severity`.
+
+```{r}
+# Check class imbalance in the target variable
+multiclass_train |> 
+  count(felony_severity) |> 
+  mutate(pct = n / sum(n))
+
+ggplot(multiclass_train, aes(x = felony_severity)) +
+  geom_bar() +
+  scale_y_continuous(n.breaks = 10) +
+  labs(title = "Number of Felonies in Each Category",
+       x = "Felony Severity Category",
+       y = "Count") +
+  theme_minimal()
+
+# Category 3 does not appear
+```
+
+## Candidate Model 1: Random Forest Model
+
+```{r}
+random_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
+
+random_model <- rand_forest(
+  trees = 200, 
+  mtry = 2,
+  min_n = 5) |>
+  set_mode("classification") |>
+  set_engine("ranger",
+             importance = "impurity",
+             num.threads = 4)
+
+random_wf <- workflow() |>
+  add_recipe(random_recipe) |>
+  add_model(random_model)
+
+random_fit <- random_wf |>
+  fit(data = multiclass_train)
+
+random_pred <- predict(random_fit, multiclass_test, type = "class") |>
+  bind_cols(multiclass_test)
+
+random_pred |>
+  recall(truth = felony_severity, estimate = .pred_class)
+
+random_pred |>
+  precision(truth = felony_severity, estimate = .pred_class)
+
+random_pred
+
+```
+
+```{r}
+# Variable importance for random forest
+random_fit |>
+  extract_fit_parsnip() |>
+  vip(num_features = 20) %>% #we are using this pipe to make sure the argument works
+  .$data |>
+  mutate (
+    importance = Importance / max(Importance),
+    variable = fct_reorder(Variable, importance)
+  ) |>
+  ggplot(aes(x = importance, y = variable, fill = importance)) +
+  geom_col() +
+  labs(
+    title = "variable importance of random forest",
+    x = "normalized importance",
+    y = "variable"
+  )
+
+# Method has variable importance =1 
+```
+
+## Candidate Model 2: CART Model
+
+```{r}
+#recipe
+cart_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
+
+# cart model object
+cart_model <- decision_tree() |>
+  set_engine(engine = "rpart") |>
+  set_mode(mode = "classification")
+
+# cart workflow
+cart_wf <- workflow() |>
+  add_recipe(cart_recipe) |>
+  add_model(cart_model)
+
+# fit
+cart_fit <- cart_wf |>
+  fit(data = multiclass_train)
+
+# create a tree
+# rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
+
+# predictions
+predictions <- bind_cols(
+  multiclass_train,
+  predict(object = cart_fit, new_data = multiclass_test),
+  predict(object = cart_fit, new_data = multiclass_test, type = "prob")
+)
+
+select(predictions, felony_severity, starts_with(".pred"))
+
+# confusion matrix
+conf_mat(data = predictions,
+         truth = felony_severity,
+         estimate = .pred_class)
+
+# recall and precision
+recall(data = predictions,
+       truth = felony_severity,
+       estimate = .pred_class)
+
+precision(data = predictions,
+          truth = felony_severity,
+          estimate = .pred_class)
+
+```
