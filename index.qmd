@@ -2,7 +2,7 @@
 title: "Data Science for Public Policy"
 subtitle: "Final Project"
 author: 
-  - name: "Troy Cheng, Ziqiao Shan, Minji Kang & Sarah Krause"
+  - name: "Troy Cheng, Ziqiao Shan, Minji Kang, Sarah Krause"
     email: yc1317@georgetown.edu
     affiliation: Georgetown University
     corresponding: true
@@ -53,7 +53,7 @@ library(rlang)
 
 ## Prepare Data Set
 
-In this stretch exercise, we use a government and policy-relevant dataset to develop a practical binary classification model predicting whether a reported crime incident in Washington, D.C. is a felony.
+In this project, we use a government and policy-relevant dataset to develop a practical binary classification model predicting whether a reported crime incident in Washington, D.C. is a felony.
 
 The data is compiled primarily from the [DC Open Data Portal](https://opendata.dc.gov/). The main source is a series of datasets titled *Crime Incidents*, released annually from 2008 to 2025, comprising a total of eighteen datasets. These include metadata for each crime incident, such as the exact date and time of occurrence, geographic coordinates (latitude and longitude), offense classification (e.g., theft, robbery), police shift (e.g., evening, midnight).
 
@@ -950,7 +950,7 @@ crime_incidents <- crime_incidents |>
 crime_sf <- st_as_sf(crime_incidents,
                      coords = c("longitude", "latitude"),
                      crs = 4326,
-                     remove = FALSE) 
+                     remove = FALSE)
 
 ```
 
@@ -1239,6 +1239,7 @@ crime_enriched <- crime_m |>
 write_csv(crime_enriched, "data/crime_enriched.csv")
 
 crime_enriched <- read_csv("data/crime_enriched.csv")
+
 ```
 
 ## Second Stage for Data Processing (ACS Data)
@@ -1451,7 +1452,11 @@ crime_enriched <- crime_enriched |>
   ) |>
     rename(tract = census_tract) #rename census_tract for join
 
+```
 
+### Merge crime_enriched and ACS5 data
+
+```{r}
 # Perform left join by tract and year
 crime_enriched <- left_join(
   crime_enriched,
@@ -1480,6 +1485,128 @@ colSums(is.na(crime_enriched_filtered))
 ```
 
 ### Handling Missing Values
+
+#### Check for missing tract
+
+```{r}
+
+# Extract tract lists
+official_tract6 <- unique(dc_tract_sf$TRACTCE)
+official_tract11 <- unique(dc_tract_sf$GEOID)
+
+crime_enriched|>
+  filter()
+unique(crime_enriched$census_tract)
+
+unique(acs_processed$GEOID)
+
+# 1. Compare crime_enriched (census_tract) with TRACTCE
+crime_tracts <- unique(na.omit(crime_enriched$census_tract))
+
+missing_in_crime <- setdiff(official_tract6, crime_tracts)
+unexpected_in_crime <- setdiff(crime_tracts, official_tract6)
+
+# 2. Compare acs_raw GEOID with official GEOID
+acs_tracts <- unique(acs_processed$GEOID)
+
+missing_in_acs <- setdiff(official_tract11, acs_tracts)
+unexpected_in_acs <- setdiff(acs_tracts, official_tract11)
+
+
+```
+官方 DC shapefile (dc_tract_sf) 中只有 206 个 tract，而 crime_enriched$census_tract 有 232 个，acs_processed$GEOID 有 231 个
+
+* DC 的 tract 编码确实在 2010 年之后经历了少量合并、拆分、重编号的变动。尤其是 ACS 每年发布的数据可能包含历史或过渡 tract 编码，而 TIGER shapefile（如你用的 2023 年版）则只反映“最新有效”的编码。
+
+```{r}
+
+# 提取 unexpected_in_acs 的后六位
+unexpected_in_acs_tract6 <- substr(unexpected_in_acs, 6, 11)
+
+# 比较两个集合是否相等（不要求顺序）
+setequal(unexpected_in_crime, unexpected_in_acs_tract6)
+
+# 如果你想看有哪些重合、哪些独有
+intersect(unexpected_in_crime, unexpected_in_acs_tract6)
+setdiff(unexpected_in_crime, unexpected_in_acs_tract6)
+setdiff(unexpected_in_acs_tract6, unexpected_in_crime)
+
+
+```
+
+两个data frame多出来的tract编码完全重合
+
+crime_enriched和acs_processed过滤出从2019-2023的数据，再重新跟2023 dc tract shp进行比对
+
+```{r}
+# 过滤 crime_enriched
+crime_filtered <- crime_enriched |>
+  mutate(report_date = lubridate::ymd_hms(str_sub(report_dat, 1, 19))) |> 
+  filter(year(report_date) >= 2019 & year(report_date) <= 2023)
+
+# 过滤 acs_processed 2019-2023
+acs_filtered <- acs_processed |>
+  filter(year >= 2019 & year <= 2023)
+
+# 提取唯一 tract
+crime_tracts_filtered <- unique(na.omit(crime_filtered$census_tract)) 
+
+acs_tracts_filtered <- unique(acs_filtered$GEOID)
+
+# Compare
+missing_in_crime_2019_2023 <- setdiff(official_tract6, crime_tracts_filtered)
+
+unexpected_in_crime_2019_2023 <- setdiff(crime_tracts_filtered, official_tract6)
+
+missing_in_acs_2019_2023 <- setdiff(official_tract11, acs_tracts_filtered)
+
+unexpected_in_acs_2019_2023 <- setdiff(acs_tracts_filtered, official_tract11)
+
+# 提取后6位进行比较
+unexpected_in_acs_tract6_filtered <- substr(unexpected_in_acs_2019_2023, 6, 11)
+
+# 比较这两个 tract 列表是否一致
+setequal(unexpected_in_crime_2019_2023, unexpected_in_acs_tract6_filtered)
+
+```
+
+ 结论总结：
+在 2008–2025 的全量数据中：
+crime_enriched 和 acs_processed 都包含 25 个 超出 2023 官方 shapefile 的 tract 编码
+
+它们 完全重合：说明这 25 个 tract 是一致的历史遗留 tract
+
+在 2019–2023 的数据中：
+crime_enriched 的这些旧 tract 全部消失
+
+但 acs_processed 的这些旧 tract 仍然存在
+
+这25个 tract 在2015-2019到2019–2023的 ACS 数据中仍然存在，但已不再出现在 2023 年 DC 官方 TIGER shapefile 中，也不再在 2019–2023 的 crime 数据中出现。
+
+```{r}
+# 过滤 acs_processed 2020-2023
+acs_filtered_2020 <- acs_processed |>
+  filter(year >= 2020 & year <= 2023)
+
+acs_tracts_filtered_2020 <- unique(acs_filtered_2020$GEOID)
+
+
+missing_in_acs_2020_2023 <- setdiff(official_tract11, acs_tracts_filtered_2020)
+
+unexpected_in_acs_2020_2023 <- setdiff(acs_tracts_filtered_2020, official_tract11)
+
+
+# 提取后6位进行比较
+unexpected_in_acs_tract6_filtered_2020 <- substr(unexpected_in_acs_2020_2023, 6, 11)
+
+# 比较这两个 tract 列表是否一致
+setequal(unexpected_in_crime_2019_2023, unexpected_in_acs_tract6_filtered_2020)
+
+```
+2016-2020到2019-2023的acs tract数据现在和dc tract shp以及2019-2023的crime incidents完全重合了
+
+
+#### Data imputation on missing values
 
 During the merge of the DC Open Data and ACS datasets, a large number of missing values (NAs) were introduced. To ensure a clean, reliable input for our model, we therefore dropped all rows containing NA values.
 
