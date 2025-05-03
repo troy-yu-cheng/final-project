@@ -28,7 +28,10 @@ library(rlang)
 
 ```{r}
 # read in the data
-crime <- read_csv("data/crime_enriched_acs_nona.csv")
+# crime <- read_csv("data/crime_enriched_acs_nona.csv")
+
+crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
+
 ```
 
 ```{r}
@@ -180,7 +183,10 @@ random_fit |>
 cart_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
 
 # cart model object
-cart_model <- decision_tree() |>
+cart_model <- decision_tree(
+  tree_depth = 5,
+  cost_complexity = 0.01
+) |>
   set_engine(engine = "rpart") |>
   set_mode(mode = "classification")
 
@@ -190,33 +196,73 @@ cart_wf <- workflow() |>
   add_model(cart_model)
 
 # fit
-cart_fit <- cart_wf |>
-  fit(data = multiclass_train)
+#cart_fit <- cart_wf |>
+  #fit(data = multiclass_train)
 
 # create a tree
 # rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
 
 # predictions
-predictions <- bind_cols(
-  multiclass_train,
-  predict(object = cart_fit, new_data = multiclass_test),
-  predict(object = cart_fit, new_data = multiclass_test, type = "prob")
-)
-
-select(predictions, felony_severity, starts_with(".pred"))
+#predictions <- bind_cols(
+  #multiclass_train,
+  #predict(object = cart_fit, new_data = multiclass_test),
+  #predict(object = cart_fit, new_data = multiclass_test, type = "prob")
+#)
+#select(predictions, felony_severity, starts_with(".pred"))
 
 # confusion matrix
-conf_mat(data = predictions,
-         truth = felony_severity,
-         estimate = .pred_class)
+#conf_mat(data = predictions,
+         #truth = felony_severity,
+         #estimate = .pred_class)
 
 # recall and precision
-recall(data = predictions,
-       truth = felony_severity,
-       estimate = .pred_class)
+#recall(data = predictions,
+       #truth = felony_severity,
+       #estimate = .pred_class)
 
-precision(data = predictions,
-          truth = felony_severity,
-          estimate = .pred_class)
+#precision(data = predictions,
+          #truth = felony_severity,
+          #estimate = .pred_class)
+
+
+#####new try
+
+cart_fit <- fit(cart_wf, data = multiclass_train)
+
+cart_predict <- predict(cart_fit, multiclass_test, type = "class")
+
+metrics(cart_predict, truth = felony_severity, estimate = .pred_class)
+
+conf_mat(cart_predict, truth = felony_severity, estimate = .pred_class)
+
+rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
+
+```
+
+## Candidate Model 3: KNN Model
+
+```{r}
+
+knn_recipe <- recipe(felony_severity ~., data = multiclass_train) |>
+  step_normalize(all_numeric_predictors())
+
+knn_model <- nearest_neighbor( neighbors = 5) |>
+  set_engine(engine = "kknn") |>
+  set_mode(mode = "classification")
+
+knn_wf <- workflow() |>
+  add_recipe(knn_recipe) |>
+  add_model(knn_model)
+
+knn_fit <- fit(knn_wf, data = multiclass_train)
+
+knn_preds <- predict(knn_fit, new_data = multiclass_test, type = "class") |>
+  bind_cols(multiclass_test)
+
+conf_mat(data = knn_preds, truth = felony_severity, estimate = .pred_class)
+
+metrics(knn_preds, truth = felony_severity, estimate = .pred_class)
+
+# so the model is predicting about 66% of the crime cases in D.C. in the correct felony type
 
 ```
