@@ -36,11 +36,11 @@ crime <- read_csv("data/crime_enriched_acs_nona.csv")
 
 ```
 
-In addition to knowing whether a crime is a felony, it is also useful for law enforcement to know the severity of the felony, since several different crime categories are classified as felonies and each require different resources and police response. 
+In addition to knowing whether a crime is a felony, it is also useful for law enforcement to know the severity of the felony, since several different crime categories are classified as felonies and each require different resources and police response.
 
 In this section, we will build on the binary classification of crimes as felony or not felony by creating a multi-classification model to classify crimes based on the felony severity level. The outcome variable is 'felony_severity,' which was derived from the 'offense' variable in the Crime Incidents datasets (2008-2025) from DC Open Data. Felony_severity contains seven different severity levels, ranging from 0 (not a felony) to 7 (homicide) (See appendix).
 
-The goal of this multi-classification model is to further enhance the ability of law enforcement in DC to effectively allocate resources by forecasting the relative severity of different felonies committed in the District. 
+The goal of this multi-classification model is to further enhance the ability of law enforcement in DC to effectively allocate resources by forecasting the relative severity of different felonies committed in the District.
 
 Replicating the steps used above for the binary classification model, we split the data to use 2019-2022 for training and 2023 for testing and implementation. We selected the same predictor variables used above from the 'crime_enriched_acs_nona' merged dataset.
 
@@ -133,7 +133,7 @@ ggplot(multiclass_train, aes(x = felony_severity)) +
 # Category 3 does not appear
 ```
 
-73% of the crimes are classified as felony severity 0, corresponding to 'not a felony.' 
+73% of the crimes are classified as felony severity 0, corresponding to 'not a felony.'
 
 # Select Error Metric
 
@@ -142,9 +142,12 @@ For our multi-classification problem, accuracy is the most appropriate error met
 $$
 \frac{\text{TP}}{\text{total}}
 $$
+
 True positives are defined as the cases where the model correctly classifies crimes as 0, 1, 2, 3, 4, 5, 6, or 7 felony severity, and total is the total number of predictions.
 
 ## Candidate Model 1: Random Forest Model
+
+Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity.
 
 ```{r}
 random_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
@@ -176,7 +179,41 @@ random_pred |>
 
 random_pred
 
+conf_mat(data = random_pred,
+         truth = felony_severity,
+         estimate = .pred_class)
+
+accuracy(data = random_pred, truth = felony_severity, estimate = .pred_class)
+
 ```
+
+The overall accuracy rate for our random forest model is 76.68%, showing that overall, the model is strong at predicting the accurate felony severity category.
+
+However, looking at the confusion matrix, we can see what is driving this high accuracy rate. For non-felonies (felony severity = 0), the model has a 99.24% accuracy rate:
+
+```{r}
+random_pred |>
+  filter(felony_severity == 0) |>
+  accuracy(truth = felony_severity, estimate = .pred_class)
+```
+
+However, the model is not good at predicting the other felony classes:
+
+I want to write a custom function but it's not working:
+
+multiclass_metrics(random_pred, felony_severity, 1, .pred_class) multiclass_metrics \<- function(x, truth, category, estimate) {
+
+filtered_dataset \<- x \|\> filter(truth == category)
+
+accuracy \<- accuracy(data = filtered_dateset, truth = truth, estimate = estimate)
+
+recall \<- recall(data = filtered_dataset, truth = truth, estimate = estimate)
+
+precision \<- precision(data = filtered_dataset, truth = truth, estimate = estimate)
+
+return(accuracy, recall, precision)
+
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 1) estimate = .pred_class)
 
 ```{r}
 # Variable importance for random forest
@@ -197,7 +234,13 @@ random_fit |>
   )
 ```
 
+Method is the most important variable, with a normalized importance of 1.
+
+I want to create some kind of visualization or something to show why that might be happening.
+
 ## Candidate Model 2: CART Model
+
+Our second candidate model is a CART (classification and regression tree) model, stratified on felony_severity because the felony_severity classes are not equal. We will use five-fold cross-validation and tune tree depth, cost complexity, and the minimum number of nodes to optimize the model.
 
 ```{r}
 # cross-validation
@@ -250,45 +293,34 @@ final_cart_wf <- cart_wf |>
 cart_fit <- final_cart_wf |>
   fit(data = multiclass_train)
 
-# create a tree
-# rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
-
 # predictions
-#predictions <- bind_cols(
-  #multiclass_train,
-  #predict(object = cart_fit, new_data = multiclass_test),
-  #predict(object = cart_fit, new_data = multiclass_test, type = "prob")
-#)
-#select(predictions, felony_severity, starts_with(".pred"))
+predictions <- bind_cols(
+  multiclass_test,
+  predict(object = cart_fit, new_data = multiclass_test),
+  predict(object = cart_fit, new_data = multiclass_test, type = "prob")
+) 
+select(predictions, felony_severity, starts_with(".pred"))
 
 # confusion matrix
-#conf_mat(data = predictions,
-         #truth = felony_severity,
-         #estimate = .pred_class)
+conf_mat(data = predictions,
+         truth = felony_severity,
+         estimate = .pred_class)
 
 # recall and precision
-#recall(data = predictions,
-       #truth = felony_severity,
-       #estimate = .pred_class)
+recall(data = predictions,
+       truth = felony_severity,
+       estimate = .pred_class)
 
-#precision(data = predictions,
-          #truth = felony_severity,
-          #estimate = .pred_class)
+precision(data = predictions,
+          truth = felony_severity,
+          estimate = .pred_class)
 
-
-#####new try
-
-#cart_fit <- fit(cart_wf, data = multiclass_train)
-
-#cart_predict <- predict(cart_fit, multiclass_test, type = "class")
-
-#metrics(cart_predict, truth = felony_severity, estimate = .pred_class)
-
-#conf_mat(cart_predict, truth = felony_severity, estimate = .pred_class)
-
-#rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
+accuracy(data = predictions,
+         truth = felony_severity,
+         estimate = .pred_class)
 
 ```
+Our CART model is predicting only the majority class (not a felony; felony_severity = 0), and therefore not learning the minority classes. This is due to the class imbalance, where felony_severity = 0 makes up 73% of the dataset.
 
 ## Candidate Model 3: KNN Model
 
@@ -317,4 +349,3 @@ metrics(knn_preds, truth = felony_severity, estimate = .pred_class)
 # so the model is predicting about 66% of the crime cases in D.C. in the correct felony type
 
 ```
-
