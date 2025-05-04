@@ -9,6 +9,8 @@ execute:
   warning: false
 ---
 
+These first two code chunks do not need to be merged / copied and pasted into the index file (just loading libraries and reading in the data).
+
 ```{r}
 library(tidyverse)
 library(readr)
@@ -28,11 +30,21 @@ library(rlang)
 
 ```{r}
 # read in the data
-# crime <- read_csv("data/crime_enriched_acs_nona.csv")
+crime <- read_csv("data/crime_enriched_acs_nona.csv")
 
-crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
+#crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
 
 ```
+
+In addition to knowing whether a crime is a felony, it is also useful for law enforcement to know the severity of the felony, since several different crime categories are classified as felonies and each require different resources and police response. 
+
+In this section, we will build on the binary classification of crimes as felony or not felony by creating a multi-classification model to classify crimes based on the felony severity level. The outcome variable is 'felony_severity,' which was derived from the 'offense' variable in the Crime Incidents datasets (2008-2025) from DC Open Data. Felony_severity contains seven different severity levels, ranging from 0 (not a felony) to 7 (homicide) (See appendix).
+
+The goal of this multi-classification model is to further enhance the ability of law enforcement in DC to effectively allocate resources by forecasting the relative severity of different felonies committed in the District. 
+
+Replicating the steps used above for the binary classification model, we split the data to use 2019-2022 for training and 2023 for testing and implementation. We selected the same predictor variables used above from the 'crime_enriched_acs_nona' merged dataset.
+
+## Prepare the Data
 
 ```{r}
 # Select variables of interest for modeling
@@ -88,7 +100,7 @@ crime_multiclass_implement <- crime_multiclass_implement |>
          )
 ```
 
-## Split Data
+### Split Data
 
 ```{r}
 set.seed(123)
@@ -100,9 +112,9 @@ multiclass_train <- training(multiclass_split)
 multiclass_test <- testing(multiclass_split)
 ```
 
-## EDA on Training Set
+### EDA on Training Set
 
-First, let's examine the distribution of the outcome variable `felony_severity`.
+First, we examine the distribution of the outcome variable `felony_severity`.
 
 ```{r}
 # Check class imbalance in the target variable
@@ -120,6 +132,17 @@ ggplot(multiclass_train, aes(x = felony_severity)) +
 
 # Category 3 does not appear
 ```
+
+73% of the crimes are classified as felony severity 0, corresponding to 'not a felony.' 
+
+# Select Error Metric
+
+For our multi-classification problem, accuracy is the most appropriate error metric, measuring how often the classifier is correct. Accuracy is defined as:
+
+$$
+\frac{\text{TP}}{\text{total}}
+$$
+True positives are defined as the cases where the model correctly classifies crimes as 0, 1, 2, 3, 4, 5, 6, or 7 felony severity, and total is the total number of predictions.
 
 ## Candidate Model 1: Random Forest Model
 
@@ -172,32 +195,60 @@ random_fit |>
     x = "normalized importance",
     y = "variable"
   )
-
-# Method has variable importance =1 
 ```
 
 ## Candidate Model 2: CART Model
 
 ```{r}
+# cross-validation
+set.seed(123)
+cross_validation <- vfold_cv(multiclass_train, v = 5, strata = felony_severity)
+
 #recipe
 cart_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
 
 # cart model object
 cart_model <- decision_tree(
-  tree_depth = 5,
-  cost_complexity = 0.01
+  tree_depth = tune(),
+  cost_complexity = tune(),
+  min_n = tune()
 ) |>
   set_engine(engine = "rpart") |>
   set_mode(mode = "classification")
+
+# set up tuning grid
+cart_grid <- grid_regular(
+  cost_complexity(range = c(0.0001, 0.1)),
+  tree_depth(range = c(3, 15)),
+  min_n(),
+  levels = 5
+)
 
 # cart workflow
 cart_wf <- workflow() |>
   add_recipe(cart_recipe) |>
   add_model(cart_model)
 
+# test and choose best hyperparameters
+cart_test <- cart_wf |>
+  tune_grid(resamples = cross_validation,
+            grid = cart_grid,
+            metrics = metric_set(recall, roc_auc, accuracy))
+
+cart_test |>
+  collect_metrics()
+
+cart_test |>
+  show_best()
+
+# finalize workflow
+final_cart_wf <- cart_wf |>
+  finalize_workflow(select_best(cart_test)
+)
+
 # fit
-#cart_fit <- cart_wf |>
-  #fit(data = multiclass_train)
+cart_fit <- final_cart_wf |>
+  fit(data = multiclass_train)
 
 # create a tree
 # rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
@@ -227,15 +278,15 @@ cart_wf <- workflow() |>
 
 #####new try
 
-cart_fit <- fit(cart_wf, data = multiclass_train)
+#cart_fit <- fit(cart_wf, data = multiclass_train)
 
-cart_predict <- predict(cart_fit, multiclass_test, type = "class")
+#cart_predict <- predict(cart_fit, multiclass_test, type = "class")
 
-metrics(cart_predict, truth = felony_severity, estimate = .pred_class)
+#metrics(cart_predict, truth = felony_severity, estimate = .pred_class)
 
-conf_mat(cart_predict, truth = felony_severity, estimate = .pred_class)
+#conf_mat(cart_predict, truth = felony_severity, estimate = .pred_class)
 
-rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
+#rpart.plot::rpart.plot(x = cart_fit$fit$fit$fit)
 
 ```
 
@@ -266,3 +317,4 @@ metrics(knn_preds, truth = felony_severity, estimate = .pred_class)
 # so the model is predicting about 66% of the crime cases in D.C. in the correct felony type
 
 ```
+
