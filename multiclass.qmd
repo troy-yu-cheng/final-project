@@ -30,9 +30,9 @@ library(rlang)
 
 ```{r}
 # read in the data
-crime <- read_csv("data/crime_enriched_acs_nona.csv")
+#crime <- read_csv("data/crime_enriched_acs_nona.csv")
 
-#crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
+crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
 
 ```
 
@@ -150,7 +150,15 @@ True positives are defined as the cases where the model correctly classifies cri
 Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity.
 
 ```{r}
-random_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
+##### original recipe #####
+#random_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
+
+##### new tried recipe #####
+random_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_rm(report_date_parsed) |>
+  step_mutate(method = factor(method)) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
 
 random_model <- rand_forest(
   trees = 200, 
@@ -162,7 +170,7 @@ random_model <- rand_forest(
              num.threads = 4)
 
 random_wf <- workflow() |>
-  add_recipe(random_recipe) |>
+  add_recipe(random_newrecipe) |>
   add_model(random_model)
 
 random_fit <- random_wf |>
@@ -247,9 +255,16 @@ Our second candidate model is a CART (classification and regression tree) model,
 set.seed(123)
 cross_validation <- vfold_cv(multiclass_train, v = 5, strata = felony_severity)
 
-#recipe
-cart_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
-  step_downsample(felony_severity)
+##### original recipe #####
+# cart_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+# step_downsample(felony_severity)
+
+##### new tried recipe #####
+cart_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_rm(report_date_parsed) |>
+  step_mutate(method = factor(method)) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
 
 # cart model object
 cart_model <- decision_tree(
@@ -270,7 +285,7 @@ cart_grid <- grid_regular(
 
 # cart workflow
 cart_wf <- workflow() |>
-  add_recipe(cart_recipe) |>
+  add_recipe(cart_newrecipe) |>
   add_model(cart_model)
 
 # test and choose best hyperparameters
@@ -326,8 +341,15 @@ Our CART model is predicting only the majority class (not a felony; felony_sever
 ## Candidate Model 3: KNN Model
 
 ```{r}
+##### original recipe #####
+#knn_recipe <- recipe(felony_severity ~., data = multiclass_train) |>
+  #step_normalize(all_numeric_predictors())
 
-knn_recipe <- recipe(felony_severity ~., data = multiclass_train) |>
+##### new tried recipe #####
+knn_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_rm(report_date_parsed) |>
+  step_mutate(method = factor(method)) |>
+  step_dummy(all_nominal_predictors()) |>
   step_normalize(all_numeric_predictors())
 
 knn_model <- nearest_neighbor( neighbors = 5) |>
@@ -335,7 +357,7 @@ knn_model <- nearest_neighbor( neighbors = 5) |>
   set_mode(mode = "classification")
 
 knn_wf <- workflow() |>
-  add_recipe(knn_recipe) |>
+  add_recipe(knn_newrecipe) |>
   add_model(knn_model)
 
 knn_fit <- fit(knn_wf, data = multiclass_train)
@@ -348,5 +370,18 @@ conf_mat(data = knn_preds, truth = felony_severity, estimate = .pred_class)
 metrics(knn_preds, truth = felony_severity, estimate = .pred_class)
 
 # so the model is predicting about 66% of the crime cases in D.C. in the correct felony type
+
+```
+
+```{r}
+
+# map first try?
+
+crime_sf <- crime |>
+  st_as_sf(coords = c("longitude", "latitude"))
+
+ggplot(data = crime_sf) +
+  geom_sf(aes(color = felony_severity), alpha = 0.5) +
+  theme_minimal()
 
 ```
