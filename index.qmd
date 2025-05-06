@@ -33,8 +33,6 @@ engine: knitr
 
 # Literature Review
 
-
-
 # Set up
 
 ```{r}
@@ -53,6 +51,7 @@ library(vip)
 library(ranger)
 library(xgboost)
 library(rlang)
+library(bestNormalize)
 ```
 
 ## Prepare Data Set
@@ -143,6 +142,18 @@ crime_enriched_implement <- crime_enriched_implement |>
          felony_flag = factor(felony_flag)
          )
 
+# Apply Yeo-Johnson transformation to the felony_severity column
+yj_obj <- yeojohnson(crime_enriched_mod$felony_severity)
+
+# Add transformed column to the training dataset
+crime_enriched_mod$felony_severity_trans <- predict(yj_obj)
+
+# Apply Yeo-Johnson transformation to the felony_severity column
+yj_obj_impl <- yeojohnson(crime_enriched_implement$felony_severity)
+
+# Add transformed column to the implement dataset
+crime_enriched_implement$felony_severity_trans <- predict(yj_obj_impl)
+
 ```
 
 ## Split Data
@@ -158,7 +169,7 @@ crime_train <- training(crime_split)
 crime_test <- testing(crime_split)
 ```
 
-*Note: This train-test split is performed only on data from 2019 to 2022. The year 2023 is held out separately for final implementation testing, simulating real-world deployment.*
+*Note: This train-test split is performed only on data from 2020 to 2022. The year 2023 is held out separately for final implementation testing, simulating real-world deployment.*
 
 ## EDA on Training Set
 
@@ -173,6 +184,42 @@ crime_train |>
 ```
 
 According to the table, about 30% of crimes in the training set are felonies, while about 70% are non-felonies. This class imbalance could affect how the model learns. We'll apply a downsampling method to help the model treat both classes fairly during training.
+
+Also, we investigate the distribution of `felony_severity`, which is used in both the multi-class classification and regression tasks.
+
+```{r}
+#| label: EDA_severity
+# Explore felony severity distribution
+crime_train |>
+  count(felony_severity) |>
+  mutate(pct = n / sum(n)) |>
+  arrange(desc(felony_severity))
+
+```
+
+Based on the table above, crimes were categorized into an ordinal scale from 0 to 7, with 0 representing non-felonies and 7 representing the most severe felony `homicide`.
+
+The distribution of felony_severity in the training set is highly skewed. About 69% of the observations fall under severity 0, meaning they are not classified as felonies under our scheme. The most frequent felony types are lower-level ones such as `motor vehicle theft`(severity = 1) and `burglary` (severity = 2). Mid-range felonies like `robbery` (severity = 4) and `aggravated assault` (severity = 5) occur less often, while severe crimes like `sexual abuse` (severity = 6) and `homicide` (severity = 7) are extremely rare, with only a few hundred instances in total. The category with severity 3 `arson` is the rarest, appearing only 17 times.
+
+To visualize this distribution, we plot the number of cases per severity score:
+
+```{r}
+crime_train |>
+  ggplot(aes(x = factor(felony_severity))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Felony Severity Scores",
+       x = "Felony Severity Score",
+       y = "Count")+
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    text = element_text(family = "serif") 
+  )
+
+
+```
+
+This long-tailed distribution shows that serious crimes like `arson` are rare in the data, which can make it harder for models to learn from them. For classification tasks, we can fix this by reducing the number of common cases (downsampling), adding more rare cases (using SMOTE), or telling the model to pay more attention to rare classes (weighted loss). For regression task, we can try using methods that handle outliers better (like robust regression), or change the target variable (like using log or bins) to make it easier for the model to learn.
 
 Second, we explore whether felony crimes are more likely on specific days of the week by plotting the proportion of crimes that are felonies for each weekday.
 
@@ -200,7 +247,7 @@ crime_train |>
 
 The plot shows felonies are slightly more frequent on weekends compared to weekdays.
 
-Third, we assess whether ACS5 predictors we selected relate meaningfully to outcome variable `felony_flag`. Here we focus on `poverty_rate`.
+Third, we assess whether ACS5 predictors we selected relate meaningfully to one of our outcome variables `felony_flag`. Here we focus on `poverty_rate`.
 
 ```{r}
 #| label: poverty-logit-smooth
@@ -258,17 +305,6 @@ unique(crime_enriched_no_na$tract)
 
 As shown in the map, felony rates are unevenly distributed across D.C. The southern and eastern tracts report substantially higher proportions of felony incidents, while felony rates are lower in northern areas.
 
-Also, we found some tracts appear as missing (shaded grey), indicating that no valid felony rate was computed. To confirm which tracts were dropped, we checked for unmatched tract codes between the shapefile and our dataset:
-
-```{r}
-# Check for missing tracts
-setdiff(dc_tract_sf$TRACTCE, crime_train$tract)
-
-setdiff(dc_tract_sf$TRACTCE, crime_enriched_mod$tract)
-```
-
-The same three tracts `980000`, `009511`, and `000201` are absent from both `crime_train` and `crime_enriched_mod`. This likely stems from aggressive NA removal strategy during the merge of DC Open Data and ACS data. For now, we flag these tracts as missing. In our final project, we plan to revisit this step and apply more robust data imputation methods.
-
 Lastly, we plot each crime by its location to spot patterns across the city. Because there are too many points for a static map, we use an interactive one. Red dots are felonies. Blue dots are non-felonies.
 
 ```{r}
@@ -315,7 +351,7 @@ plot_ly(
 
 ## Select Error Metric
 
-In this classification task, the outcome variable is `felony_flag`, indicating whether a reported crime is classified as a felony. We aim to build a predictive model that helps law enforcement allocate patrol resources more efficiently by identifying potential felony incidents in advance.
+In this binary classification task, the outcome variable is `felony_flag`, indicating whether a reported crime is classified as a felony. We aim to build a predictive model that helps law enforcement allocate patrol resources more efficiently by identifying potential felony incidents in advance.
 
 For this binary classification problem, we propose to use `1 − Recall` as our main evaluation metric, which intuitively represents the share of felonies the model fails to detect:
 
@@ -331,13 +367,13 @@ In this context, a `false negative` (missed felonies) is more costly than a `fal
 
 ## Come up with Models
 
-Three model specifications are as below. Each model uses different combinations of feature sets, pre-processing (recipe) and algorithms, so that we can compare their effectiveness and usefulness in the forth part.
+We test three model specifications as below. Each model uses different combinations of feature sets, pre-processing (recipe) and algorithms, so that we can compare their effectiveness and usefulness in the evaluation part.
 
 ### Model 1: Logistic Regression with LASSO
 
 This model uses logistic regression with L1 regularization to predict felony likelihood, prioritizing interpretability and simplicity. It focuses on demographic and temporal predictors that reflect structural and situational risk. The L1 penalty helps reduce noise by shrinking less relevant variables toward zero.
 
-We include seven ACS-derived variables: `poverty rate`, `renter share`, `Black and Hispanic population percentages`, `foreign-born share`, and the proportions of residents under 18 and over 65. We also include two crime-level factors: `police shift` and `method of offense`.
+We include seven ACS-derived variables: `poverty rate`, `Black and Hispanic population percentages`, `foreign-born share`, and the proportions of residents under 18 and over 65. We also include two crime-level factors: `police shift` and `method of offense`.
 
 Preprocessing steps include:
 
@@ -355,8 +391,9 @@ The specific recipe is as below:
 
 ```{r}
 #| label: crime_rec_log
-crime_rec_log <- recipe(felony_flag ~ poverty_rate + renter_pct + 
+crime_rec_log <- recipe(felony_flag ~ poverty_rate + unemployed_rate +
                           black_pct + hispanic_pct + foreign_born_pct + 
+                          hsplus_pct +
                           under18_pct + age65plus_pct +
                           shift + method + report_date_parsed,
                         data = crime_train) |>
@@ -383,7 +420,8 @@ log_spec <- logistic_reg(
   penalty = tune(), # L1 penalty strength (lambda)
   mixture = 1 # 1 means LASSO (L1 only)
 ) |> 
-  set_engine("glmnet")
+  set_engine("glmnet") |>
+  set_mode("classification") 
 
 log_wf <- workflow() |> 
   add_model(log_spec) |> 
@@ -452,7 +490,7 @@ The predictors include:
 
 1.  Spatial and Proximity Features: `in_liquor_moratorium_zone`, `nearest_liquorstore_dist`, `near_liquorstore_200m`, `near_wifi_100m`, `nearest_wifi_dist`, `in_lowfood_zone`, `nearest_grocery_dist`, `near_grocery_300m`, `nearest_bank_dist`, `near_bank_250m`, `in_vending_zone`, `police_sector`, `in_military_base`.
 
-2.  Demographic and Socioeconomic Features from ACS: `median_income`, `poverty_rate`, `unemployed_rate`, `singlemom_pct`, `renter_pct`, `no_vehicle_pct`, `black_pct`, `hispanic_pct`, `foreign_born_pct`, `hsplus_pct`, `under18_pct`, `age65plus_pct`.
+2.  Demographic and Socioeconomic Features from ACS: `poverty_rate`, `unemployed_rate`, `black_pct`, `hispanic_pct`, `foreign_born_pct`, `hsplus_pct`, `under18_pct`, `age65plus_pct`.
 
 3.  Time and Categorical Contextual Features: `shift`, `method`, `tract`, `report_date_parsed`.
 
@@ -465,6 +503,7 @@ The specific recipe is as below:
 ```{r}
 #| label: crime_rec_xgb
 crime_rec_xgb <- recipe(felony_flag ~ ., data = crime_train) |>
+  step_rm(felony_severity) |>
   step_downsample(felony_flag) |>
   step_date(report_date_parsed, features = "dow", label = TRUE) |>
   step_mutate(
@@ -493,7 +532,8 @@ xgb_spec <- boost_tree(
   learn_rate = tune(), # learning rate (to be tuned)
   loss_reduction = tune() # min loss reduction to split further (to be tuned)
 ) |>
-  set_engine("xgboost")
+  set_engine("xgboost") |>
+  set_mode("classification") 
 
 xgb_wf <- workflow() |>
   add_model(xgb_spec) |>
@@ -558,7 +598,7 @@ log_model <- extract_fit_parsnip(final_log_fit)
 vip(log_model, num_features = 20)
 ```
 
-The plot shows that `offense method` and `police shift` are the most important predictors. Features like `method_OTHERS`, `method_KNIFE` and `shift_MIDNIGHT` strongly contribute to felony predictions. Most temporal and demographic variables like `black_pct`, `foreign_born_pct` have much lower influence. This shows that situational factors of how the crime happened and when it happened carry more predictive weight than background demographic characteristics in this model.
+The plot shows that `offense method` and `police shift` are the most important predictors. Features like `method_OTHERS`, `method_KNIFE` and `shift_MIDNIGHT`, `shift_EVENING` strongly contribute to felony predictions. Most temporal and demographic variables like `report_date_parsed_dow_Wed`, `black_pct`, `foreign_born_pct` have much lower influence. This shows that situational factors of how the crime happened and when it happened carry more predictive weight than background demographic characteristics in this model.
 
 Next, let's assess our tuned logistic regression model using both the test set (from 2019–2022) and the implementation set (from 2023). We focus on the model's ability to identify felony incidents, particularly minimizing false negatives.
 
@@ -587,7 +627,7 @@ recall_val
 one_minus_recall_val
 ```
 
-The model achieves an `accuracy` of 78.4% and a `1 − Recall` of only 0.0021 on the test set. This means fewer than 0.3% of true felonies are misclassified as non-felonies. This is crucial in a public safety context where failing to detect a felony could result in inadequate response.
+The model achieves an `accuracy` of 78.4% and a `1 − Recall` of only 0.0015 on the test set. This means fewer than 0.2% of true felonies are misclassified as non-felonies. This is crucial in a public safety context where failing to detect a felony could result in inadequate response.
 
 #### Out-of-sample Generalization to 2023 Implementation Set
 
@@ -614,7 +654,7 @@ recall_val_impl
 one_minus_recall_val_impl
 ```
 
-On the implementation set, the model maintains a recall of 99.6% and an accuracy of 72.8%, with a `1 − Recall` of 0.0039. This confirms the model generalizes well and continues to flag nearly all felony cases, even in new data.
+On the implementation set, the model maintains a recall of 99.6% and an accuracy of 72.4%, with a `1 − Recall` of 0.0043. This confirms the model generalizes well and continues to flag nearly all felony cases, even in new data.
 
 In conclusion, the model is effective because it captures the majority of serious crimes with very low false negatives. In policing strategy, this is far more important than overall accuracy. The model's simplicity and high recall make it practical for daily patrol planning and hotspot targeting.
 
@@ -892,13 +932,353 @@ ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
 
 ```
 
-# Regression Model
+# Regression Task
 
-## Add felony_rate Column at Tract Level
+## Explanation on Outcome Variable
+
+In this regression task, the outcome variable is `felony_severity_trans`, which is a transformed version of the original felony_severity score using the **Yeo-Johnson transformation**. The original score ranged from 0 to 7, reflecting the seriousness of the felony based on sentence length and social cost. For example, `homicide` is scored as 7, while `motor vehicle theft` is scored as 1. Although this score is technically ordinal (ranked categories), we treat it as approximately continuous for modeling purposes. This is a common approach in applied research when the levels are evenly spaced and reflect meaningful differences ([Robitzsch, 2020](https://doi.org/10.3389/feduc.2020.589965)). For instance, the gap between scores of 1 and 2 can be interpreted similarly to the gap between 5 and 6. This treatment allows us to conduct standard regression models.
+
+However, the distribution of `felony_severity` is skewed due to the rarity of severe crimes like `arson` and `homicide`, which can distort model performance. To address this, we applied the **Yeo-Johnson transformation** to the outcome variable. This transformation preserves the relative severity ranking, but reduces skewness and pulls in extreme values, improving model performance by better meeting assumptions of normality and homoscedasticity.
+
+After transformation, the values are no longer on the original 0–7 scale. For example, the eight unique severity levels were transformed to:
 
 ```{r}
-crime_enriched_mod
+unique(crime_train$felony_severity_trans)
+```
 
+These numbers are not directly interpretable in real-world terms, but they retain the ordering of crime severity and provide a statistically stable basis for modeling.
+
+In practice, we use `felony_severity_trans` as the outcome variable during model training and prediction, and then apply the **inverse Yeo-Johnson transformation** (via `predict(yj_obj, inverse = TRUE)`) to convert predicted values back to the original 0–7 severity scale. This allows for more intuitive interpretation of the results while preserving the modeling benefits of the transformation.
+
+## Select Error Metric
+
+Our goal is to predict how severe a crime might be if it is a felony. This helps the police understand which crimes are more dangerous and need more attention.
+
+Since some severe crimes are rare, we want to make sure the model does not make big mistakes when predicting them. So we use `RMSE` and `R-squared` as our main evaluation metrics. RMSE tells us how far the predictions are from the true values, especially for big mistakes. R-squared shows how much variation in severity scores our model can explain.
+
+## Come up with Models
+
+For this regression task, we still build three candidate models to test which performs best.
+
+### Model 1: Linear Regression with Yeo-Johnson Transformation
+
+This baseline model uses linear regression to predict felony severity. It focuses on socioeconomic context and crime-level temporal features. While linear models may not capture complex interactions, they offer a strong baseline for comparison and clear insights into variable importance. We use the pre-transformed outcome `felony_severity_trans` to reduce skewness and stabilize variance.
+
+```{r}
+#| label: crime_rec_lm
+crime_rec_lm <- recipe(felony_severity_trans ~ poverty_rate + unemployed_rate + 
+                         black_pct + hispanic_pct + foreign_born_pct +
+                         hsplus_pct +
+                         under18_pct + age65plus_pct +
+                         shift + method + report_date_parsed,
+                       data = crime_train) |>
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(report_date_parsed) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors())
+```
+
+The model specification and workflow are defined as follows:
+
+```{r}
+#| label: model1-lm-spec-wf
+lm_spec <- linear_reg() |> 
+  set_engine("lm") |>
+  set_mode("regression") 
+  
+lm_wf <- workflow() |> 
+  add_model(lm_spec) |> 
+  add_recipe(crime_rec_lm)
+```
+
+### Model 2: Random Forest Regression with Spatial Features
+
+This model uses Random Forest to predict `felony_severity_trans`, a transformed version of `felony severity`, based on spatial and environmental context. It includes features such as tract, proximity to liquor stores, grocery stores, banks, and public infrastructure, as well as police sector and zoning indicators. Socioeconomic variables are excluded to focus on location-based risk factors.
+
+```{r}
+#| label: crime_rec_rf_reg
+crime_rec_rf_reg <- recipe(felony_severity_trans ~ tract + shift + method + 
+                             report_date_parsed +
+                             in_liquor_moratorium_zone + 
+                             nearest_liquorstore_dist + near_liquorstore_200m +
+                             near_wifi_100m + nearest_wifi_dist +
+                             in_lowfood_zone + 
+                             nearest_grocery_dist + near_grocery_300m +
+                             nearest_bank_dist + near_bank_250m +
+                             in_vending_zone + police_sector + in_military_base,
+                           data = crime_train) |>
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(report_date_parsed) |>
+  step_corr(all_numeric_predictors(), threshold = 0.9) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors())
+
+```
+
+The model specification and workflow are defined as follows:
+
+```{r}
+#| label: model2-reg-spec-wf
+rf_spec_reg <- rand_forest(
+  mtry = tune(),
+  trees = 50,
+  min_n = tune()
+) |>
+  set_engine("ranger", importance = "impurity") |>
+  set_mode("regression")
+
+rf_wf_reg <- workflow() |>
+  add_model(rf_spec_reg) |>
+  add_recipe(crime_rec_rf_reg)
+```
+
+### Model 3: XGBoost Regression with All Features
+
+This model leverages all available features to predict `felony_severity_trans`, a transformed version of felony severity. It includes demographic, spatial, temporal, and contextual predictors. We again apply a Yeo-Johnson transformation to the outcome and clean predictors using normalization, correlation filtering, and dummy encoding.
+
+```{r}
+#| label: crime_rec_xgb_reg
+crime_rec_xgb_reg <- recipe(felony_severity ~ ., data = crime_train) |>
+  step_rm(felony_flag) |>
+  step_YeoJohnson(all_outcomes()) |>  # transform skewed outcome
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(x, y, latitude, longitude, year, report_date_parsed) |>
+  step_nzv(all_predictors()) |>
+  step_corr(all_numeric_predictors(), threshold = 0.9) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors())
+```
+
+The model specification and workflow are defined as follows:
+
+```{r}
+#| label: model3-reg-spec-wf
+xgb_spec_reg <- boost_tree(
+  trees = 50,
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune()
+) |>
+  set_engine("xgboost") |>
+  set_mode("regression")
+
+xgb_wf_reg <- workflow() |>
+  add_model(xgb_spec_reg) |>
+  add_recipe(crime_rec_xgb_reg)
+```
+
+## Estimation
+
+We use 5-fold cross-validation and tune model hyperparameters for all three regression models. Our evaluation metrics are `RMSE` and `R-squared`, which reflect prediction accuracy and explained variance, respectively.
+
+```{r}
+#| label: reg-cv-setup
+# Set up 5-fold cross-validation
+set.seed(123)
+crime_folds_reg <- vfold_cv(crime_train, v = 5)
+
+# Define metrics for regression
+reg_metrics <- metric_set(rmse, rsq)
+
+```
+
+### Model 1: Linear Regression (no tuning needed)
+
+```{r}
+#| label: model1-lm-estimate
+# Evaluate model via 5-fold CV
+lm_res <- fit_resamples(
+  lm_wf,
+  resamples = crime_folds_reg,
+  metrics = reg_metrics,
+  control = control_resamples(save_pred = TRUE)
+)
+
+# Fit final model on full training set
+lm_fit <- fit(lm_wf, data = crime_train)
+
+```
+
+### Model 2: Random Forest
+
+```{r}
+#| label: model2-rf-reg-est
+# Define tuning grid for random forest
+set.seed(123)
+rf_grid_reg <- grid_random(
+  mtry(range = c(3, 12)),
+  min_n(range = c(2, 10)),
+  size = 5
+)
+
+# Tune model
+rf_res_reg <- tune_grid(
+  rf_wf_reg,
+  resamples = crime_folds,
+  grid = rf_grid_reg,
+  metrics = reg_metrics,
+  control = control_grid(save_pred = TRUE),
+  verbose = TRUE
+)
+
+# Select best model based on RMSE
+best_rf_reg <- select_best(rf_res_reg, metric = "rmse")
+
+# Finalize and fit
+final_rf_wf_reg <- finalize_workflow(rf_wf_reg, best_rf_reg)
+final_rf_fit_reg <- fit(final_rf_wf_reg, data = crime_train)
+
+```
+
+### Model 3: XGBoost
+
+```{r}
+#| label: model3-xgb-estimate
+# Create random tuning grid
+set.seed(123)
+xgb_grid_reg <- grid_random(
+  tree_depth(range = c(3, 10)),
+  learn_rate(range = c(0.01, 0.3)),
+  loss_reduction(range = c(0, 1)),
+  size = 5
+)
+
+# Tune with cross-validation
+xgb_res <- tune_grid(
+  xgb_wf_reg,
+  resamples = crime_folds_reg,
+  grid = xgb_grid_reg,
+  metrics = reg_metrics,
+  control = control_grid(save_pred = TRUE),
+  verbose = TRUE
+)
+
+# Select best hyperparameters
+best_xgb <- select_best(xgb_res, metric = "rmse")
+
+# Finalize and fit model
+final_xgb_wf <- finalize_workflow(xgb_wf_reg, best_xgb)
+final_xgb_fit <- fit(final_xgb_wf, data = crime_train)
+```
+
+## Interpretation
+
+### Vraible Importance
+
+```{r}
+# Linear Regression doesn't have built-in importance, so skip
+
+# Random Forest importance
+rf_model_reg <- extract_fit_parsnip(final_rf_fit_reg)
+vip(rf_model_reg, num_features = 20)
+
+# XGBoost importance
+xgb_model_reg <- extract_fit_parsnip(final_xgb_fit)
+vip(xgb_model_reg, num_features = 20)
+
+
+```
+
+### Evaluate on Test Set
+
+```{r}
+# Linear Regression - Test
+lm_test_pred <- predict(lm_fit, new_data = crime_test) |> 
+  bind_cols(crime_test |> select(felony_severity))
+
+metrics(lm_test_pred, truth = felony_severity, estimate = .pred)
+
+# Random Forest - Test
+rf_test_pred <- predict(final_rf_fit_reg, new_data = crime_test) |> 
+  bind_cols(crime_test |> select(felony_severity))
+
+metrics(rf_test_pred, truth = felony_severity, estimate = .pred)
+
+# XGBoost - Test
+xgb_test_pred <- predict(final_xgb_fit, new_data = crime_test) |> 
+  bind_cols(crime_test |> select(felony_severity))
+
+metrics(xgb_test_pred, truth = felony_severity, estimate = .pred)
+
+
+```
+
+### Evaluate on Implementation Set
+
+```{r}
+# Linear Regression - Implementation
+lm_impl_pred <- predict(lm_fit, new_data = crime_enriched_implement) |> 
+  bind_cols(crime_enriched_implement |> select(felony_severity))
+
+metrics(lm_impl_pred, truth = felony_severity, estimate = .pred)
+
+# Random Forest - Implementation
+rf_impl_pred <- predict(final_rf_fit_reg, new_data = crime_enriched_implement) |> 
+  bind_cols(crime_enriched_implement |> select(felony_severity))
+
+metrics(rf_impl_pred, truth = felony_severity, estimate = .pred)
+
+# XGBoost - Implementation
+xgb_impl_pred <- predict(final_xgb_fit, new_data = crime_enriched_implement) |> 
+  bind_cols(crime_enriched_implement |> select(felony_severity))
+
+metrics(xgb_impl_pred, truth = felony_severity, estimate = .pred)
+
+
+```
+
+### Collect all metrics into one table
+
+```{r}
+all_metrics_reg <- bind_rows(
+  mutate(metrics(lm_test_pred, truth = felony_severity, estimate = .pred), model = "Linear Regression", set = "Test"),
+  mutate(metrics(rf_test_pred, truth = felony_severity, estimate = .pred), model = "Random Forest", set = "Test"),
+  mutate(metrics(xgb_test_pred, truth = felony_severity, estimate = .pred), model = "XGBoost", set = "Test"),
+  
+  mutate(metrics(lm_impl_pred, truth = felony_severity, estimate = .pred), model = "Linear Regression", set = "Implementation"),
+  mutate(metrics(rf_impl_pred, truth = felony_severity, estimate = .pred), model = "Random Forest", set = "Implementation"),
+  mutate(metrics(xgb_impl_pred, truth = felony_severity, estimate = .pred), model = "XGBoost", set = "Implementation")
+)
+
+```
+
+### Visualize 3 Models' Performances
+
+```{r}
+# Plot RMSE Comparison
+all_metrics_reg |>
+  filter(.metric == "rmse") |>
+  ggplot(aes(x = model, y = .estimate, fill = set)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "RMSE Comparison across Models and Datasets",
+       x = "Model",
+       y = "RMSE") +
+  theme_minimal()
+
+# Plot R-squared Comparison
+all_metrics_reg |>
+  filter(.metric == "rsq") |>
+  ggplot(aes(x = model, y = .estimate, fill = set)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "R-squared Comparison across Models and Datasets",
+       x = "Model",
+       y = "R-squared") +
+  theme_minimal()
 ```
 
 # Appendix
@@ -954,22 +1334,24 @@ Here we assign a `felony_severity` score to each major offense type, using the [
 
 | Felony Offense | `felony_severity` Score | CHI Sentence Days (per case) | Total Cost per Case (USD, 2008) |
 |------------------|------------------|------------------|-------------------|
-| HOMICIDE | 7 | 5,475 | $8,982,907 |
-| SEX ABUSE (Rape/Sexual Assault) | 6 | 1,825 / 365 | $240,776 |
-| ASSAULT W/DANGEROUS WEAPON | 5 | 1,460 (GBH) | $107,020 (Aggravated Assault) |
-| ROBBERY | 4 | 365 | $42,310 |
-| ARSON | 3 | 33 | $21,103 |
-| BURGLARY | 2 | 20 | $6,462 (Household) |
-| MOTOR VEHICLE THEFT | 1 | 20 | $10,772 |
-| THEFT F/AUTO / THEFT/OTHER | 0 | 20 / 2 | $3,532 |
+| HOMICIDE | 7 | 5,475 | \$8,982,907 |
+| SEX ABUSE (Rape/Sexual Assault) | 6 | 1,825 / 365 | \$240,776 |
+| ASSAULT W/DANGEROUS WEAPON | 5 | 1,460 (GBH) | \$107,020 (Aggravated Assault) |
+| ROBBERY | 4 | 365 | \$42,310 |
+| ARSON | 3 | 33 | \$21,103 |
+| BURGLARY | 2 | 20 | \$6,462 (Household) |
+| MOTOR VEHICLE THEFT | 1 | 20 | \$10,772 |
+| THEFT F/AUTO / THEFT/OTHER | 0 | 20 / 2 | \$3,532 |
 
 **Notes:**
 
 -   **ASSAULT W/DANGEROUS WEAPON** is aligned with **GBH (Grievous Bodily Harm, Intent)** rather than ABH (Actual Bodily Harm), due to its higher violence and harm level.
 
-- **MOTOR VEHICLE THEFT** has a higher monetary cost than **BURGLARY**, but both offenses carry similar CHI sentence days (20). However, **BURGLARY** often involves unlawful entry into private residences, violating a victim’s sense of safety and security. This intrusion into personal space is considered more psychologically harmful and socially disruptive than property theft alone, which is why burglary is ranked higher in severity.
+-   **MOTOR VEHICLE THEFT** has a higher monetary cost than **BURGLARY**, but both offenses carry similar CHI sentence days (20). However, **BURGLARY** often involves unlawful entry into private residences, violating a victim’s sense of safety and security. This intrusion into personal space is considered more psychologically harmful and socially disruptive than property theft alone, which is why burglary is ranked higher in severity.
 
-- - **THEFT F/AUTO** and **THEFT/OTHER** are not classified as felonies in this model; they receive a score of 0 despite having minor CHI and cost estimates. While [D.C. law](https://code.dccouncil.gov/us/dc/council/code/sections/22-3212) does consider theft exceeding $1,000 as a felony, we exclude these categories because the offense labels in the dataset do not reliably distinguish petty theft from felony-level theft. Without clear thresholds or legal classifications in the `offense` variable, treating all theft as non-felony ensures greater consistency in modeling.
+-   
+
+    -   **THEFT F/AUTO** and **THEFT/OTHER** are not classified as felonies in this model; they receive a score of 0 despite having minor CHI and cost estimates. While [D.C. law](https://code.dccouncil.gov/us/dc/council/code/sections/22-3212) does consider theft exceeding \$1,000 as a felony, we exclude these categories because the offense labels in the dataset do not reliably distinguish petty theft from felony-level theft. Without clear thresholds or legal classifications in the `offense` variable, treating all theft as non-felony ensures greater consistency in modeling.
 
 ### Add Features
 
