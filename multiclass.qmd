@@ -497,8 +497,6 @@ ggplot(tract_sf_newjoined) +
   labs(
     title = "Crime Count by Tract and Felony Severity"
   ) +
-  theme_minimal()
-
-######need to revise fourth map codes######
+  theme_void()
 
 ```
