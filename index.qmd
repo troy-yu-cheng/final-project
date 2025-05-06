@@ -81,7 +81,7 @@ To enrich the crime records with contextual and spatial information, we merged s
 
 We also integrated tract-level socioeconomic indicators from the American Community Survey (ACS5) using the `tidycensus` package. These variables include poverty rate, income, renter percentage, race/ethnicity composition, vehicle ownership, and age structure etc. Notably, since ACS5 provides rolling estimates across five-year spans, we aligned each crime observation with the most recent ACS data available for that year. For example, the 2005–2009 ACS estimates are used to represent conditions in 2009. While not a perfect snapshot, this method can act as a consistent way to approximate local context year by year.
 
-The final merged dataset (`crime_enriched_acs_nona.csv`) is available via this [shared link](https://drive.google.com/file/d/1xSicNSVM_-Xzb-CoXYXpTYt98r9PON7n/view?usp=drive_link).
+The final merged dataset (`crime_enriched_acs_nona.csv`) is available via this [shared link](https://drive.google.com/file/d/1sbGz9sY37c_5gGZh8LnMcokTRxfgET79/view?usp=drive_link).
 
 The outcome variable, `felony_flag`, is derived from the reported offense type, indicating whether a reported crime is classified as a felony. This classification task is critical, as felonies typically represent more serious crimes and require distinct responses in terms of police allocation. Our goal is to build a predictive model that helps law enforcement deploy patrol resources more efficiently by forecasting felony likelihood using supervised machine learning techniques.
 
@@ -162,7 +162,7 @@ crime_test <- testing(crime_split)
 
 ## EDA on Training Set
 
-First, let's examine the distribution of the outcome variable `felony_flag`.
+First, let's examine the distribution of the outcome variable `felony_flag` for binary classification task.
 
 ```{r}
 #| label: EDA
