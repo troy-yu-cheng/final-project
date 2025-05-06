@@ -31,6 +31,10 @@ highlight-style: nord
 engine: knitr
 ---
 
+# Literature Review
+
+
+
 # Set up
 
 ```{r}
@@ -53,7 +57,13 @@ library(rlang)
 
 ## Prepare Data Set
 
-In this project, we use a government and policy-relevant dataset to develop a practical binary classification model predicting whether a reported crime incident in Washington, D.C. is a felony.
+In this project, we use a government and policy-relevant dataset to develop a three different types of models to predict:
+
+1.  the likelihood of a crime being a felony in Washington, D.C. (binary classification task);
+
+2.  which felony category a new reported crime in DC falls under (multi-classification task);
+
+3.  what felony severity score of a crime new reported in DC would be (regression task).
 
 The data is compiled primarily from the [DC Open Data Portal](https://opendata.dc.gov/). The main source is a series of datasets titled *Crime Incidents*, released annually from 2008 to 2025, comprising a total of eighteen datasets. These include metadata for each crime incident, such as the exact date and time of occurrence, geographic coordinates (latitude and longitude), offense classification (e.g., theft, robbery), police shift (e.g., evening, midnight).
 
@@ -75,7 +85,7 @@ The final merged dataset (`crime_enriched_acs_nona.csv`) is available via this [
 
 The outcome variable, `felony_flag`, is derived from the reported offense type, indicating whether a reported crime is classified as a felony. This classification task is critical, as felonies typically represent more serious crimes and require distinct responses in terms of police allocation. Our goal is to build a predictive model that helps law enforcement deploy patrol resources more efficiently by forecasting felony likelihood using supervised machine learning techniques.
 
-To ensure real-world model evaluation, we split the dataset by time: observations from 2019 to 2022 are used for training, while 2023 data is reserved for implementation testing. The detailed data processing and cleaning steps are documented in the Appendix section. The raw data sources are listed in the README.
+To ensure real-world model evaluation, we split the dataset by time: observations from 2020 to 2022 are used for training, while 2023 data is reserved for implementation testing. The detailed data processing and cleaning steps are documented in the **Appendix** section. The raw data sources are listed in the [**README**](https://github.com/troy-yu-cheng/final-project?tab=readme-ov-file#data-sources).
 
 ```{r}
 #| label: Load data
@@ -85,7 +95,7 @@ crime_enriched_no_na <- read_csv("data/crime_enriched_acs_nona.csv")
 
 # Select variables of interest for modeling
 keep_vars <- c(
-  "felony_flag", # outcome variable
+  "felony_flag", "felony_severity", # outcome variables
   "x", "y", "latitude", "longitude", "year",
   "shift", "method", "tract", "report_date_parsed",
 
@@ -101,22 +111,19 @@ keep_vars <- c(
   "in_military_base",
 
   # ACS socioeconomic features
-  "median_income", "poverty_rate", "unemployed_rate", 
-  "singlemom_pct",
-  "renter_pct", "no_vehicle_pct", 
+  "poverty_rate", "unemployed_rate", 
   "black_pct", "hispanic_pct","foreign_born_pct", 
   "hsplus_pct", 
   "under18_pct", "age65plus_pct"
 )
 
-
 # Keep only selected variables
 crime_enriched_small <- crime_enriched_no_na |> 
   select(all_of(keep_vars))
 
-# Define training data (2019-2022)
+# Define training data (2020-2022)
 crime_enriched_mod <- crime_enriched_small |>
-  filter(year >= 2019, year < 2023)
+  filter(year >= 2020, year < 2023)
 
 # Define implementation/test data (2023)
 crime_enriched_implement <- crime_enriched_small |>
@@ -165,7 +172,7 @@ crime_train |>
   mutate(pct = n / sum(n))
 ```
 
-According to the table, about 30% of crimes in the training set are felonies, while 70% are non-felonies. This class imbalance could affect how the model learns. We'll apply a downsampling method to help the model treat both classes fairly during training.
+According to the table, about 30% of crimes in the training set are felonies, while about 70% are non-felonies. This class imbalance could affect how the model learns. We'll apply a downsampling method to help the model treat both classes fairly during training.
 
 Second, we explore whether felony crimes are more likely on specific days of the week by plotting the proportion of crimes that are felonies for each weekday.
 
@@ -222,6 +229,7 @@ Furthermore, we calculate average felony rates by census tract and display them 
 
 dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
 ```
+
 ```{r}
 tract_felrate <- crime_train |>
   group_by(tract) |>
@@ -244,6 +252,8 @@ ggplot(tract_sf_joined) +
   theme(
     text = element_text(family ="serif")
   )
+
+unique(crime_enriched_no_na$tract)
 ```
 
 As shown in the map, felony rates are unevenly distributed across D.C. The southern and eastern tracts report substantially higher proportions of felony incidents, while felony rates are lower in northern areas.
@@ -301,6 +311,8 @@ plot_ly(
 
 ```
 
+# Binary Classification
+
 ## Select Error Metric
 
 In this classification task, the outcome variable is `felony_flag`, indicating whether a reported crime is classified as a felony. We aim to build a predictive model that helps law enforcement allocate patrol resources more efficiently by identifying potential felony incidents in advance.
@@ -316,8 +328,6 @@ This metric directly reflects how often the model misses serious crimes. Since m
 Although metrics like accuracy and `ROC AUC` provide an overall picture, they may be misleading under class imbalance. Here, felonies represent about 30% of cases, so a model could achieve high accuracy while failing to catch most felonies.
 
 In this context, a `false negative` (missed felonies) is more costly than a `false positive` (flagging non-felonies). A false positive might result in unnecessary police allocation, which is manageable. While a false negative may mean failing to prevent or respond to a serious crime, posing higher social and safety costs.
-
-# Binary Classification
 
 ## Come up with Models
 
@@ -438,7 +448,7 @@ rf_wf <- workflow() |>
 
 This model maximizes predictive power by incorporating the full set of spatial, socioeconomic, and temporal predictors available in the dataset. Unlike Models 1 and 2, which focus on interpretability or spatial patterns, this model includes feature broadly and lets the boosting algorithm handle interactions and variable selection.
 
-The predictors include: 
+The predictors include:
 
 1.  Spatial and Proximity Features: `in_liquor_moratorium_zone`, `nearest_liquorstore_dist`, `near_liquorstore_200m`, `near_wifi_100m`, `nearest_wifi_dist`, `in_lowfood_zone`, `nearest_grocery_dist`, `near_grocery_300m`, `nearest_bank_dist`, `near_bank_250m`, `in_vending_zone`, `police_sector`, `in_military_base`.
 
@@ -882,7 +892,6 @@ ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
 
 ```
 
-
 # Regression Model
 
 ## Add felony_rate Column at Tract Level
@@ -892,10 +901,9 @@ crime_enriched_mod
 
 ```
 
-
 # Appendix
 
-## First Stage: Data Processing (DC Open Data)
+## First Stage for Data Processing (DC Open Data)
 
 ### Load crime incident data (2008–2025) from DC Open Data portal
 
@@ -941,6 +949,27 @@ crime_incidents <- crime_incidents |>
     TRUE ~ 0  # not felony
   ))
 ```
+
+Here we assign a `felony_severity` score to each major offense type, using the [Cambridge Crime Harm Index (CHI)](https://doi.org/10.1093/police/paw003) and [per-case cost data](https://pmc.ncbi.nlm.nih.gov/articles/PMC2835847/) as reference. CHI sentence days reflect the relative harm severity as determined by sentencing guidelines. While monetary cost gives an economic impact perspective, the severity ranking primarily follows the CHI framework.
+
+| Felony Offense | `felony_severity` Score | CHI Sentence Days (per case) | Total Cost per Case (USD, 2008) |
+|------------------|------------------|------------------|-------------------|
+| HOMICIDE | 7 | 5,475 | $8,982,907 |
+| SEX ABUSE (Rape/Sexual Assault) | 6 | 1,825 / 365 | $240,776 |
+| ASSAULT W/DANGEROUS WEAPON | 5 | 1,460 (GBH) | $107,020 (Aggravated Assault) |
+| ROBBERY | 4 | 365 | $42,310 |
+| ARSON | 3 | 33 | $21,103 |
+| BURGLARY | 2 | 20 | $6,462 (Household) |
+| MOTOR VEHICLE THEFT | 1 | 20 | $10,772 |
+| THEFT F/AUTO / THEFT/OTHER | 0 | 20 / 2 | $3,532 |
+
+**Notes:**
+
+-   **ASSAULT W/DANGEROUS WEAPON** is aligned with **GBH (Grievous Bodily Harm, Intent)** rather than ABH (Actual Bodily Harm), due to its higher violence and harm level.
+
+- **MOTOR VEHICLE THEFT** has a higher monetary cost than **BURGLARY**, but both offenses carry similar CHI sentence days (20). However, **BURGLARY** often involves unlawful entry into private residences, violating a victim’s sense of safety and security. This intrusion into personal space is considered more psychologically harmful and socially disruptive than property theft alone, which is why burglary is ranked higher in severity.
+
+- - **THEFT F/AUTO** and **THEFT/OTHER** are not classified as felonies in this model; they receive a score of 0 despite having minor CHI and cost estimates. While [D.C. law](https://code.dccouncil.gov/us/dc/council/code/sections/22-3212) does consider theft exceeding $1,000 as a felony, we exclude these categories because the offense labels in the dataset do not reliably distinguish petty theft from felony-level theft. Without clear thresholds or legal classifications in the `offense` variable, treating all theft as non-felony ensures greater consistency in modeling.
 
 ### Add Features
 
@@ -1379,7 +1408,7 @@ missing_table <- var_check_df |>
 
 ```
 
-### Starting Data Retrieval from 2012
+### Starting ACS Data Retrieval from 2012
 
 Our checks show that data from 2009 to 2011 is incomplete. Since incomplete data cannot yield reliable predictions and we aim to forecast for the most recent year (2023), we will begin retrieving data from 2012 onward.
 
@@ -1400,9 +1429,14 @@ acs_raw <- map_dfr(years, function(y) {
     mutate(year = y)
 })
 
+# Export acs raw data
+write_csv(acs_raw, "data/acs_raw.csv")
+
+acs_raw <- read_csv("data/acs_raw.csv")
+
 ```
 
-Merge into `crime_enriched`
+Prepare ACS data for merging by pivoting and creating derived features.
 
 ```{r}
 #| eval: false
@@ -1441,7 +1475,258 @@ acs_processed <- acs_wide |>
     tract = stringr::str_sub(GEOID, -6)
   )
 
+# Export acs processed data
+write_csv(acs_processed, "data/acs_processed.csv")
 
+acs_processed <- read_csv("data/acs_processed.csv")
+```
+
+### Handling Missing Values in Tract Column
+
+As we want our data to keep the maximum valid geospatial features at tract level, we need to check if the DC open data, ACS5 data and official DC tract data are consistent before we merge them into one. We first compare tract IDs in `crime_enriched` and `acs_processed` with the official 2023 shapefile to identify missing or obsolete tracts.
+
+```{r}
+#| eval: false
+#| include: true
+
+# Load 2023 official DC tract shapefile 
+dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp") 
+
+# Extract tract lists
+official_tract6 <- unique(dc_tract_sf$TRACTCE)
+
+official_tract11 <- unique(dc_tract_sf$GEOID)
+
+# Compare crime_enriched (census_tract) with dc_tract_sf$TRACTCE
+crime_tracts <- unique(na.omit((crime_enriched$census_tract)))
+
+missing_in_crime <- setdiff(official_tract6, crime_tracts)
+
+unexpected_in_crime <- setdiff(crime_tracts, official_tract6)
+
+# Compare acs_processed GEOID with official dc_tract_sf$GEOID
+acs_tracts <- unique(na.omit(acs_processed$GEOID))
+
+missing_in_acs <- setdiff(official_tract11, acs_tracts)
+
+unexpected_in_acs <- setdiff(acs_tracts, official_tract11)
+```
+
+The official DC shapefile (`dc_tract_sf`) contains 206 tracts, while both `crime_enriched$census_tract` and `acs_processed$GEOID` contain 231 unique tract identifiers after droping NAs. This means there are 25 tracts present in the datasets but missing from the 2023 TIGER shapefile.
+
+*Note: Only crime incidents from DC open data have NAs in the tract column. There's no NAs in ACS5 tract column, meaning all tracts had been calculated its demographic feature in ACS survey. While a few crime incidents did not have their tract recorded, this may occur during law enforcement operations when detailed location data is not captured.*
+
+Since the `crime_enriched` data spans 2008–2025 and the `acs_processed` data covers 2012–2023, it is likely that changes to tract definitions, such as splits, merges, or renumbering, have occurred over the years. These changes can result in older tract codes persisting in historical data but not appearing in the most recent shapefile.
+
+To confirm this, we compare the unexpected tracts in `crime_enriched` and `acs_processed` against the official 2023 shapefile to see if they are the same.
+
+```{r}
+#| eval: false
+#| include: true
+# Convert 11-digit ACS GEOIDs to 6-digit tract codes
+unexpected_in_acs_tract6 <- substr(unexpected_in_acs, 6, 11)
+
+# Check if both datasets contain the same extra tracts
+setequal(unexpected_in_crime, unexpected_in_acs_tract6)
+
+# Inspection of overlap and differences
+intersect(unexpected_in_crime, unexpected_in_acs_tract6)
+
+setdiff(unexpected_in_crime, unexpected_in_acs_tract6)
+
+setdiff(unexpected_in_acs_tract6, unexpected_in_crime)
+```
+
+The results show that the two datasets share the exact same set of 25 unexpected tract codes.
+
+To investigate whether these tracts are legacy codes that have since been phased out, we now filter both datasets to include only observations from 2019 to 2023, which we wanna use to build our predictive models. We then compare the resulting tract coverage to the official 2023 DC shapefile.
+
+```{r}
+#| eval: false
+#| include: true
+
+# Filter crime data to 2019–2023
+crime_filtered <- crime_enriched |>
+  mutate(report_date = lubridate::ymd_hms(str_sub(report_dat, 1, 19))) |> 
+  filter(year(report_date) >= 2019 & year(report_date) <= 2023)
+
+# Filter ACS data to 2019–2023
+acs_filtered <- acs_processed |>
+  filter(year >= 2019 & year <= 2023)
+
+# Extract unique tract identifiers
+crime_tracts_filtered <- unique(na.omit(crime_filtered$census_tract)) 
+
+acs_tracts_filtered <- unique(na.omit(acs_filtered$GEOID))
+```
+
+We then identify any tracts that appear in the filtered datasets (2019-2023) but are not included in the 2023 TIGER shapefile.
+
+```{r}
+#| eval: false
+#| include: true
+
+# Compare against 2023 official tracts
+missing_in_crime_2019_2023 <- setdiff(official_tract6, crime_tracts_filtered)
+
+unexpected_in_crime_2019_2023 <- setdiff(crime_tracts_filtered, official_tract6)
+
+missing_in_acs_2019_2023 <- setdiff(official_tract11, acs_tracts_filtered)
+
+unexpected_in_acs_2019_2023 <- setdiff(acs_tracts_filtered, official_tract11)
+```
+
+The crime data from 2019–2023 aligns perfectly with the 2023 TIGER shapefile, showing no extra tracts. However, ACS still contains 25 unexpected tracts. This is likely because ACS 5-year estimates span earlier years and retain older tract definitions. To ensure consistency across all datasets, we will restrict our analysis to the 2020–2023 period.
+
+To investigate further, we check whether these 25 tracts are the same as the unexpected tracts found in the full datasets from 2008–2025 (crime incidents) and 2012–2023 (ACS5).
+
+```{r}
+#| eval: false
+#| include: true
+# Check if the 25 unexpected tracts in 2019–2023 ACS match those in the full ACS data
+setequal(unexpected_in_acs_2019_2023, unexpected_in_acs)
+
+# Trim ACS GEOIDs to 6-digit tract codes for comparison with crime incidents data
+unexpected_in_acs_tract6_filtered <- substr(unexpected_in_acs_2019_2023, 6, 11)
+
+# Check if these match the unexpected tracts in the full crime incidents dataset
+setequal(unexpected_in_acs_tract6_filtered, unexpected_in_crime)
+
+```
+
+In the full datasets:
+
+-   Both crime_enriched (2008-2025) and acs_processed (2012-2023) contain 25 extra tracts not present in the 2023 TIGER shapefile.
+
+-   These 25 tracts are identical across both datasets, indicating they are likely the legacy tracts.
+
+In the 2019–2023 subset:
+
+-   The unexpected tracts have been removed from the crime incidents data.
+
+-   However, they still exist in the ACS data.
+
+This suggests that the outdated tracts persist in ACS due to the rolling nature of 5-year estimates.
+
+To test this further, we narrow ACS to 2020–2023. Because this window only includes data from 2016 onward, we expect the outdated tracts to drop off if the change occurred before or around 2016.
+
+```{r}
+#| eval: false
+#| include: true
+# Filter ACS to 2020–2023
+acs_filtered_2020 <- acs_processed |>
+  filter(year >= 2020 & year <= 2023)
+
+acs_tracts_filtered_2020 <- unique(acs_filtered_2020$GEOID)
+
+# Compare with official 2023 tract list
+missing_in_acs_2020_2023 <- setdiff(official_tract11, acs_tracts_filtered_2020)
+
+unexpected_in_acs_2020_2023 <- setdiff(acs_tracts_filtered_2020, official_tract11)
+
+# Compare with 2019-2023 ACS tract list
+
+setdiff(acs_tracts_filtered, acs_tracts_filtered_2020)
+
+setdiff(acs_tracts_filtered_2020, acs_tracts_filtered)
+
+# Check if all unexpected tracts are gone
+acs_tract6_filtered_2020 <- substr(acs_tracts_filtered_2020, 6, 11)
+
+setequal(crime_tracts_filtered, acs_tract6_filtered_2020)
+```
+
+We find that the 2020-2023 ACS data now matches the 2023 TIGER shapefile and the 2019–2023 crime data exactly. The outdated tract codes still appeared in the 2019–2023 results, while they disappeared in the 2020-2023 results. This may because ACS 5-year estimates include data from earlier years. 2019-2023 ACS data covers data from 2015, and 2020-2023 ACS data covers data from 2016. So the tract changes are likely to happen between 2015 and 2016.
+
+Next, we will compare the TIGER shapefiles from 2015 and 2016 to confirm when the tract boundary changes were officially implemented to test this hypothesis.
+
+```{r}
+#| eval: false
+#| include: true
+# Load 2015 and 2016 DC tract shapefiles
+tract_2015 <- st_read("data/tl_2015_11_tract/tl_2015_11_tract.shp")
+tract_2016 <- st_read("data/tl_2016_11_tract/tl_2016_11_tract.shp")
+
+# Extract unique GEOIDs
+geoids_2015 <- unique(tract_2015$GEOID)
+geoids_2016 <- unique(tract_2016$GEOID)
+
+# Compare 
+setdiff(geoids_2015, geoids_2016)
+setdiff(geoids_2016, geoids_2015)
+```
+
+The results show our assumption was incorrect. No tract changes occurred between 2015 and 2016. The GEOIDs are identical for both years.
+
+To further investigate when the tract definitions changed, we referred to the [U.S. Census Bureau's 2010 guide](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/districtofcolumbia.html), which states that DC had 179 census tracts as of 2010.
+
+However, we observed that the 2023 DC TIGER shapefile includes 206 tracts. The same count appears in the ACS 5-year data from 2020–2023 and the crime incident data from 2019–2023.
+
+This led to a second hypothesis: DC's total number of tracts increased between 2010 and 2023.
+
+```{r}
+#| eval: false
+#| include: true
+# Load 2010 DC tracts
+dc_tract_2010 <- st_read("data/tl_2010_11001_tract10/tl_2010_11001_tract10.shp")
+
+
+# Extract tract GEOIDs
+dc_tracts_2010_ids <- unique(dc_tract_2010$GEOID)
+dc_tracts_2023_ids <- unique(dc_tract_sf$GEOID)
+
+# Compare tract counts and differences
+length(dc_tracts_2010_ids)  # 179
+length(dc_tracts_2023_ids)  # 206
+
+setdiff(dc_tracts_2023_ids, dc_tracts_2010_ids) # 52 added
+setdiff(dc_tracts_2010_ids, dc_tracts_2023_ids) # 25 removed
+```
+
+From this comparison, we see that 52 tracts were added and 25 were removed between 2010 and 2023. This results in a net increase of 27 tracts, confirming that DC's tract count grew from 179 to 206 over this period. While this change isn't explicitly documented in a single source, it can be deduced through shapefile comparison. To identify the specific year of this change, we can do this comparison year by year.
+
+Since both 2015 and 2016 still had 179 tracts, which are the same as in 2010, we began checking for changes starting from 2017.
+
+```{r}
+#| eval: false
+#| include: true
+# Load 2017-2020 DC tract shapefiles
+tract_2017 <- st_read("data/tl_2017_11_tract/tl_2017_11_tract.shp")
+tract_2018 <- st_read("data/tl_2018_11_tract/tl_2018_11_tract.shp")
+tract_2019 <- st_read("data/tl_2019_11_tract/tl_2019_11_tract.shp")
+tract_2020 <- st_read("data/tl_2020_11_tract/tl_2020_11_tract.shp")
+
+# Extract unique GEOIDs
+geoids_2017 <- unique(tract_2017$GEOID)
+geoids_2018 <- unique(tract_2018$GEOID)
+geoids_2019 <- unique(tract_2019$GEOID)
+geoids_2020 <- unique(tract_2020$GEOID)
+
+# Compare year by year
+setdiff(geoids_2017, geoids_2018)
+setdiff(geoids_2018, geoids_2017)
+
+setdiff(geoids_2018, geoids_2019)
+setdiff(geoids_2019, geoids_2018)
+
+setdiff(geoids_2019, geoids_2020)
+setdiff(geoids_2020, geoids_2019)
+
+```
+
+The results confirm that the major tract update occurred between 2019 and 2020. During this transition, 25 tracts were removed and 52 were added, increasing the total from 179 to 206.
+
+While ACS and crime data each follow their own update cycles, we have verified that for the years 2020–2023, the tracts in both ACS 5-year estimates and crime incidents data fully match the 2023 TIGER shapefile.
+
+Therefore, to ensure consistency across all datasets, we revise our modeling window to cover only the four years from 2020 to 2023, instead of the originally planned 2019–2023 period.
+
+### Merge crime_enriched and ACS5 data
+
+Clean and prepare the crime data to match ACS structure.
+
+```{r}
+#| eval: false
+#| include: true
 # Select required fields from `crime_enriched`
 crime_enriched <- crime_enriched |>
   mutate(
@@ -1454,9 +1739,11 @@ crime_enriched <- crime_enriched |>
 
 ```
 
-### Merge crime_enriched and ACS5 data
+Now we merge the cleaned crime data with the ACS data by matching on tract and year.
 
 ```{r}
+#| eval: false
+#| include: true
 # Perform left join by tract and year
 crime_enriched <- left_join(
   crime_enriched,
@@ -1477,138 +1764,16 @@ Last process to keep valid data:
 #| eval: false
 #| include: true
 crime_enriched_filtered <- crime_enriched |>
-  filter(year >= 2012, year <= 2023)
+  filter(year >= 2020, year <= 2023)
 
 # Inspect which variables for missing values
 colSums(is.na(crime_enriched_filtered))
 
 ```
 
-### Handling Missing Values
+### Data imputation on missing values
 
-#### Check for missing tract
-
-```{r}
-
-# Extract tract lists
-official_tract6 <- unique(dc_tract_sf$TRACTCE)
-official_tract11 <- unique(dc_tract_sf$GEOID)
-
-crime_enriched|>
-  filter()
-unique(crime_enriched$census_tract)
-
-unique(acs_processed$GEOID)
-
-# 1. Compare crime_enriched (census_tract) with TRACTCE
-crime_tracts <- unique(na.omit(crime_enriched$census_tract))
-
-missing_in_crime <- setdiff(official_tract6, crime_tracts)
-unexpected_in_crime <- setdiff(crime_tracts, official_tract6)
-
-# 2. Compare acs_raw GEOID with official GEOID
-acs_tracts <- unique(acs_processed$GEOID)
-
-missing_in_acs <- setdiff(official_tract11, acs_tracts)
-unexpected_in_acs <- setdiff(acs_tracts, official_tract11)
-
-
-```
-官方 DC shapefile (dc_tract_sf) 中只有 206 个 tract，而 crime_enriched$census_tract 有 232 个，acs_processed$GEOID 有 231 个
-
-* DC 的 tract 编码确实在 2010 年之后经历了少量合并、拆分、重编号的变动。尤其是 ACS 每年发布的数据可能包含历史或过渡 tract 编码，而 TIGER shapefile（如你用的 2023 年版）则只反映“最新有效”的编码。
-
-```{r}
-
-# 提取 unexpected_in_acs 的后六位
-unexpected_in_acs_tract6 <- substr(unexpected_in_acs, 6, 11)
-
-# 比较两个集合是否相等（不要求顺序）
-setequal(unexpected_in_crime, unexpected_in_acs_tract6)
-
-# 如果你想看有哪些重合、哪些独有
-intersect(unexpected_in_crime, unexpected_in_acs_tract6)
-setdiff(unexpected_in_crime, unexpected_in_acs_tract6)
-setdiff(unexpected_in_acs_tract6, unexpected_in_crime)
-
-
-```
-
-两个data frame多出来的tract编码完全重合
-
-crime_enriched和acs_processed过滤出从2019-2023的数据，再重新跟2023 dc tract shp进行比对
-
-```{r}
-# 过滤 crime_enriched
-crime_filtered <- crime_enriched |>
-  mutate(report_date = lubridate::ymd_hms(str_sub(report_dat, 1, 19))) |> 
-  filter(year(report_date) >= 2019 & year(report_date) <= 2023)
-
-# 过滤 acs_processed 2019-2023
-acs_filtered <- acs_processed |>
-  filter(year >= 2019 & year <= 2023)
-
-# 提取唯一 tract
-crime_tracts_filtered <- unique(na.omit(crime_filtered$census_tract)) 
-
-acs_tracts_filtered <- unique(acs_filtered$GEOID)
-
-# Compare
-missing_in_crime_2019_2023 <- setdiff(official_tract6, crime_tracts_filtered)
-
-unexpected_in_crime_2019_2023 <- setdiff(crime_tracts_filtered, official_tract6)
-
-missing_in_acs_2019_2023 <- setdiff(official_tract11, acs_tracts_filtered)
-
-unexpected_in_acs_2019_2023 <- setdiff(acs_tracts_filtered, official_tract11)
-
-# 提取后6位进行比较
-unexpected_in_acs_tract6_filtered <- substr(unexpected_in_acs_2019_2023, 6, 11)
-
-# 比较这两个 tract 列表是否一致
-setequal(unexpected_in_crime_2019_2023, unexpected_in_acs_tract6_filtered)
-
-```
-
- 结论总结：
-在 2008–2025 的全量数据中：
-crime_enriched 和 acs_processed 都包含 25 个 超出 2023 官方 shapefile 的 tract 编码
-
-它们 完全重合：说明这 25 个 tract 是一致的历史遗留 tract
-
-在 2019–2023 的数据中：
-crime_enriched 的这些旧 tract 全部消失
-
-但 acs_processed 的这些旧 tract 仍然存在
-
-这25个 tract 在2015-2019到2019–2023的 ACS 数据中仍然存在，但已不再出现在 2023 年 DC 官方 TIGER shapefile 中，也不再在 2019–2023 的 crime 数据中出现。
-
-```{r}
-# 过滤 acs_processed 2020-2023
-acs_filtered_2020 <- acs_processed |>
-  filter(year >= 2020 & year <= 2023)
-
-acs_tracts_filtered_2020 <- unique(acs_filtered_2020$GEOID)
-
-
-missing_in_acs_2020_2023 <- setdiff(official_tract11, acs_tracts_filtered_2020)
-
-unexpected_in_acs_2020_2023 <- setdiff(acs_tracts_filtered_2020, official_tract11)
-
-
-# 提取后6位进行比较
-unexpected_in_acs_tract6_filtered_2020 <- substr(unexpected_in_acs_2020_2023, 6, 11)
-
-# 比较这两个 tract 列表是否一致
-setequal(unexpected_in_crime_2019_2023, unexpected_in_acs_tract6_filtered_2020)
-
-```
-2016-2020到2019-2023的acs tract数据现在和dc tract shp以及2019-2023的crime incidents完全重合了
-
-
-#### Data imputation on missing values
-
-During the merge of the DC Open Data and ACS datasets, a large number of missing values (NAs) were introduced. To ensure a clean, reliable input for our model, we therefore dropped all rows containing NA values.
+During the merge of DC Open Data and ACS datasets, several variables introduced a high proportion of missing values. Instead of dropping all rows with any NA, which would remove some tracts entirely, we first drop variables that are missing in more than 95% of `(year, tract)` groups. We then remove any remaining rows that still contain missing values.
 
 ```{r}
 #| eval: false
@@ -1620,30 +1785,78 @@ na_ratio <- colSums(is.na(crime_enriched_filtered)) / nrow(crime_enriched_filter
 crime_enriched_filtered <- crime_enriched_filtered |>
   select(which(na_ratio < 0.3))
 
-crime_enriched_no_na <- crime_enriched_filtered |>
-  drop_na()
+# Drop rows where `tract` is NA
+crime_enriched_filtered <- crime_enriched_filtered |>
+  filter(!is.na(tract))
 
-table(crime_enriched_no_na$year)
+# Identify columns to check (excluding grouping columns)
+cols_to_check <- setdiff(colnames(crime_enriched_filtered), c("year", "tract"))
+
+# For each (year, tract) group, calculate the NA rate for each variable
+na_summary <- crime_enriched_filtered |>
+  group_by(year, tract) |>
+  summarise(across(all_of(cols_to_check), ~ mean(is.na(.)), .names = "na_{col}")) |>
+  ungroup()
+
+# Drop variables missing in >95% of (year, tract) group
+vars_with_high_na <- na_summary |>
+  pivot_longer(cols = starts_with("na_"), names_to = "var", values_to = "na_rate") |>
+  filter(na_rate > 0.95) |>
+  mutate(var = sub("^na_", "", var)) |>
+  distinct(var) |>
+  pull(var)
+
+crime_enriched_filtered <- crime_enriched_filtered |>
+  select(-all_of(vars_with_high_na))
+  
+# Check how many NA values remain per column
+colSums(is.na(crime_enriched_filtered))
+
+crime_enriched_filtered |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "column", values_to = "na_count") |>
+  filter(na_count > 0) |>
+  arrange(desc(na_count))
+
+# Drop known NA columns that are not used for modeling
+crime_enriched_no_na <- crime_enriched_filtered |>
+  select(-c(end_date, psa, district, start_date, block_group, voting_precinct))
+
+# Check if there's NA in crime_enriched_no_na
+sum(is.na(crime_enriched_no_na))
 
 write_csv(crime_enriched_no_na, "data/crime_enriched_acs_nona.csv")
 
 crime_enriched_no_na <- read_csv("data/crime_enriched_acs_nona.csv")
 
+# Check the tract column
+unique(crime_enriched_no_na$tract)
+
 ```
 
 ## Final Stage for Data Processing (NIBRS Data)
 
-This part is for final project's data and is still in processing. 
+We checked the [UCR Program data from Harvard Dataverse](https://dataverse.harvard.edu/dataverse/ucrdata), including its administrative segment, offense segment, offender segment, arrestee segment and victim segment. Though they have proper year column that we can merge our current data frame with, they are missing the column of tract number. Actually, these datasets cover the whole US. So they might be more useful when building a predictive model at state level, instead of tract level within DC. Here, we decide not to joining the data from NIBRS for our DC-crime-predicting model.
 
 ```{r}
 #| eval: false
 #| include: true
-test_rds <- readRDS("data/DC/nibrs/offense/nibrs_offense_segment_2021.rds")
 
-admin_2023 <- readRDS("data/DC/nibrs/admin/nibrs_administrative_segment_2021.rds")
+admin_2023 <- readRDS("data/DC/nibrs/admin/nibrs_administrative_segment_2021.rds") |>
+  filter(state_abb == "dc")
 
+offense_2023 <- readRDS("data/DC/nibrs/offense/nibrs_offense_segment_2023.rds") |>
+  filter(state_abb == "dc")
+
+offender_2023 <- readRDS("data/DC/nibrs/offender/nibrs_offender_segment_2023.rds") |>
+  filter(state_abb == "dc")
+
+arrestee_2023 <- readRDS("data/DC/nibrs/arrestee/nibrs_arrestee_segment_2023.rds") |>
+  filter(state_abb == "dc")
+
+victim_2023 <- readRDS("data/DC/nibrs/victim/nibrs_victim_segment_2023.rds") |>
+  filter(state_abb == "dc")
 ```
-
 
 ```{=html}
 <script>
@@ -1673,4 +1886,3 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 </script>
 ```
-
