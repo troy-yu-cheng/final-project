@@ -30,15 +30,16 @@ library(rlang)
 
 ```{r}
 # read in the data
-#crime <- read_csv("data/crime_enriched_acs_nona.csv")
 
-crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
+crime <- read_csv("data/crime_enriched_acs_nona.csv")
+
+#crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
 
 ```
 
 In addition to knowing whether a crime is a felony, it is also useful for law enforcement to know the severity of the felony, since several different crime categories are classified as felonies and each require different resources and police response.
 
-In this section, we will build on the binary classification of crimes as felony or not felony by creating a multi-classification model to classify crimes based on the felony severity level. The outcome variable is 'felony_severity,' which was derived from the 'offense' variable in the Crime Incidents datasets (2008-2025) from DC Open Data. Felony_severity contains seven different severity levels, ranging from 0 (not a felony) to 7 (homicide) (See appendix).
+In this section, we will build on the binary classification of crimes as felony or not felony by creating a multi-classification model to classify crimes based on the felony severity level. The outcome variable is 'felony_severity,' which was derived from the 'offense' variable in the Crime Incidents datasets (2008-2025) from DC Open Data. Felony_severity contains seven different severity levels, ranging from 0 (not a felony) to 7 (homicide) (See appendix). However, our multiclass classification candidate models will only include felonies, so felony severity level 0 will be removed from the dataset.
 
 The goal of this multi-classification model is to further enhance the ability of law enforcement in DC to effectively allocate resources by forecasting the relative severity of different felonies committed in the District.
 
@@ -75,7 +76,8 @@ multiclass_vars <- c(
 
 # Keep only selected variables
 crime_multiclass <- crime |> 
-  select(all_of(multiclass_vars))
+  select(all_of(multiclass_vars)) |>
+  filter(felony_severity > 0)
 
 # Define training data (2019-2022)
 crime_multiclass_small <- crime_multiclass |>
@@ -130,10 +132,9 @@ ggplot(multiclass_train, aes(x = felony_severity)) +
        y = "Count") +
   theme_minimal()
 
-# Category 3 does not appear
 ```
 
-73% of the crimes are classified as felony severity 0, corresponding to 'not a felony.'
+40% of the crimes are classified as felony severity 1, corresponding to 'motor vehicle theft,' which is the lowest severity level among felonies.
 
 # Select Error Metric
 
@@ -147,19 +148,18 @@ True positives are defined as the cases where the model correctly classifies cri
 
 ## Candidate Model 1: Random Forest Model
 
-Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity.
+Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity. Because felony severity level 1 is disproportionately represented in the dataset, we will downsample felony_severity.
 
 ```{r}
-##### original recipe #####
-#random_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
-
-##### new tried recipe #####
+# recipe
 random_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_downsample(felony_severity) |>
   step_rm(report_date_parsed) |>
   step_mutate(method = factor(method)) |>
   step_dummy(all_nominal_predictors()) |>
   step_normalize(all_numeric_predictors())
 
+# model
 random_model <- rand_forest(
   trees = 200, 
   mtry = 2,
@@ -169,16 +169,20 @@ random_model <- rand_forest(
              importance = "impurity",
              num.threads = 4)
 
+# workflow 
 random_wf <- workflow() |>
   add_recipe(random_newrecipe) |>
   add_model(random_model)
 
+# fit the model
 random_fit <- random_wf |>
   fit(data = multiclass_train)
 
+# generate predictions 
 random_pred <- predict(random_fit, multiclass_test, type = "class") |>
   bind_cols(multiclass_test)
 
+# calculate metrics 
 random_pred |>
   recall(truth = felony_severity, estimate = .pred_class)
 
@@ -195,13 +199,13 @@ accuracy(data = random_pred, truth = felony_severity, estimate = .pred_class)
 
 ```
 
-The overall accuracy rate for our random forest model is 76.68%, showing that overall, the model is strong at predicting the accurate felony severity category.
+The overall accuracy rate for our random forest model is 23.08%, showing that overall, the model is has a weak ability to predict the accurate felony severity category.
 
-However, looking at the confusion matrix, we can see what is driving this high accuracy rate. For non-felonies (felony severity = 0), the model has a 99.24% accuracy rate:
+Looking at the confusion matrix, we can see what is driving this low accuracy rate.
 
 ```{r}
 random_pred |>
-  filter(felony_severity == 0) |>
+  filter(felony_severity == 1) |>
   accuracy(truth = felony_severity, estimate = .pred_class)
 ```
 
@@ -211,7 +215,7 @@ I want to write a custom function but it's not working:
 
 multiclass_metrics(random_pred, felony_severity, 1, .pred_class) multiclass_metrics \<- function(x, truth, category, estimate) {
 
-filtered_dataset <- x |\> filter(truth == category)
+filtered_dataset \<- x \|\> filter(truth == category)
 
 accuracy \<- accuracy(data = filtered_dateset, truth = truth, estimate = estimate)
 
@@ -242,7 +246,7 @@ random_fit |>
   )
 ```
 
-Method is the most important variable, with a normalized importance of 1.
+Method: 'others' is the most important factor, with a normalized importance of 1. This value indicates that the crime was not committed with a knife or gun.
 
 I want to create some kind of visualization or something to show why that might be happening.
 
@@ -255,12 +259,9 @@ Our second candidate model is a CART (classification and regression tree) model,
 set.seed(123)
 cross_validation <- vfold_cv(multiclass_train, v = 5, strata = felony_severity)
 
-##### original recipe #####
-# cart_recipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
-# step_downsample(felony_severity)
-
-##### new tried recipe #####
+# recipe
 cart_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_downsample(felony_severity) |>
   step_rm(report_date_parsed) |>
   step_mutate(method = factor(method)) |>
   step_dummy(all_nominal_predictors()) |>
@@ -336,42 +337,46 @@ accuracy(data = predictions,
          estimate = .pred_class)
 
 ```
-Our CART model is predicting only the majority class (not a felony; felony_severity = 0), and therefore not learning the minority classes. This is due to the class imbalance, where felony_severity = 0 makes up 73% of the dataset.
+
+Our CART model is only correctly predicting the majority class (felony_severity = 1), and therefore not learning the minority classes. This is likely due to the class imbalance, even though we downsampled felony severity. 
 
 ## Candidate Model 3: KNN Model
 
 ```{r}
-##### original recipe #####
-#knn_recipe <- recipe(felony_severity ~., data = multiclass_train) |>
-  #step_normalize(all_numeric_predictors())
-
-##### new tried recipe #####
+# recipe
 knn_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_downsample(felony_severity) |>
   step_rm(report_date_parsed) |>
   step_mutate(method = factor(method)) |>
+  step_zv(all_predictors()) |>
+  step_novel(all_factor_predictors()) |>
   step_dummy(all_nominal_predictors()) |>
-  step_normalize(all_numeric_predictors())
+  step_normalize(all_numeric_predictors()) 
 
+# model
 knn_model <- nearest_neighbor( neighbors = 5) |>
   set_engine(engine = "kknn") |>
   set_mode(mode = "classification")
 
+# workflow
 knn_wf <- workflow() |>
   add_recipe(knn_newrecipe) |>
   add_model(knn_model)
 
+# fit the model
 knn_fit <- fit(knn_wf, data = multiclass_train)
 
+# generate predictions
 knn_preds <- predict(knn_fit, new_data = multiclass_test, type = "class") |>
   bind_cols(multiclass_test)
 
+# calculate metrics 
 conf_mat(data = knn_preds, truth = felony_severity, estimate = .pred_class)
 
 metrics(knn_preds, truth = felony_severity, estimate = .pred_class)
 
-# so the model is predicting about 66% of the crime cases in D.C. in the correct felony type
-
 ```
+The accuracy rate is 19.49% for the KNN model. 
 
 ```{r}
 
