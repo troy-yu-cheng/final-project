@@ -31,9 +31,9 @@ library(rlang)
 ```{r}
 # read in the data
 
-crime <- read_csv("data/crime_enriched_acs_nona.csv")
+#crime <- read_csv("data/crime_enriched_acs_nona.csv")
 
-#crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
+crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
 
 ```
 
@@ -66,9 +66,7 @@ multiclass_vars <- c(
   "in_military_base",
 
   # ACS socioeconomic features
-  "median_income", "poverty_rate", "unemployed_rate", 
-  "singlemom_pct",
-  "renter_pct", "no_vehicle_pct", 
+  "poverty_rate", "unemployed_rate",
   "black_pct", "hispanic_pct","foreign_born_pct", 
   "hsplus_pct", 
   "under18_pct", "age65plus_pct"
@@ -199,7 +197,7 @@ accuracy(data = random_pred, truth = felony_severity, estimate = .pred_class)
 
 ```
 
-The overall accuracy rate for our random forest model is 23.08%, showing that overall, the model is has a weak ability to predict the accurate felony severity category.
+The overall accuracy rate for our random forest model is 26.54%, showing that overall, the model is has a weak ability to predict the accurate felony severity category.
 
 Looking at the confusion matrix, we can see what is driving this low accuracy rate.
 
@@ -246,7 +244,8 @@ random_fit |>
   )
 ```
 
-Method: 'others' is the most important factor, with a normalized importance of 1. This value indicates that the crime was not committed with a knife or gun.
+
+Method: 'black_pct' is the most important factor, with a normalized importance of 1. This value indicates that total number of black population in each tract.
 
 I want to create some kind of visualization or something to show why that might be happening.
 
@@ -264,8 +263,11 @@ cart_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train)
   step_downsample(felony_severity) |>
   step_rm(report_date_parsed) |>
   step_mutate(method = factor(method)) |>
-  step_dummy(all_nominal_predictors()) |>
-  step_normalize(all_numeric_predictors())
+  step_zv(all_predictors()) |>
+  step_novel(all_factor_predictors()) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors())
+  
 
 # cart model object
 cart_model <- decision_tree(
@@ -376,11 +378,13 @@ conf_mat(data = knn_preds, truth = felony_severity, estimate = .pred_class)
 metrics(knn_preds, truth = felony_severity, estimate = .pred_class)
 
 ```
-The accuracy rate is 19.49% for the KNN model. 
+The accuracy rate is 14.53% for the KNN model. 
 
 ```{r}
 
 # map first try?
+
+dc_tract_sf <- st_read("~/Desktop/final-project/data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
 
 crime_sf <- crime |>
   st_as_sf(coords = c("longitude", "latitude"))
@@ -388,5 +392,33 @@ crime_sf <- crime |>
 ggplot(data = crime_sf) +
   geom_sf(aes(color = felony_severity), alpha = 0.5) +
   theme_minimal()
+
+
+
+
+
+
+tract_felrate <- multiclass_train |>
+  group_by(tract) |>
+  filter(felony_severity == 1) |>
+  summarize(
+    vehicletheft_rate = mean(as.numeric(as.character(felony_severity)))
+  )
+
+tract_sf_joined <- dc_tract_sf |> 
+  left_join(tract_felrate, by = c("TRACTCE" = "tract"))
+
+ggplot(tract_sf_joined) +
+  geom_sf(aes(fill = vehicletheft_rate), color = "white", size = 0.2) +
+    scale_fill_gradient(
+    low = "#d6e4f0",   
+    high = "#274472",
+    na.value = "grey90"
+  ) +
+  labs(title = "Vehicle Theft Rate by Census Tract") +
+  theme_classic() +
+  theme(
+    text = element_text(family ="serif")
+  )
 
 ```
