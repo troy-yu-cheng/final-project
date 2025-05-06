@@ -33,6 +33,12 @@ engine: knitr
 
 # Literature Review
 
+Urban crime remains a pressing public‑policy challenge that threatens residents’ safety and citywide prosperity. Washington, D.C. — with its sharp neighbourhood inequalities and highly variable crime trends — offers a revealing testbed for understanding where and why serious offences emerge. To move beyond surface-level counts, this project adopts an unsupervised machine learning approach to better understand the underlying patterns of crime in the city.
+
+A substantial body of research links environmental features and police activity to crime outcomes. Risk‑terrain studies consistently show that proximity to liquor outlets, transit nodes, and other public facilities elevates assault and robbery rates (Bowers & Johnson 2011). Hot‑spots experiments demonstrate that concentrating patrols on micro‑places produces modest but significant crime reductions that diffuse to surrounding blocks (Braga, Papachristos, & Hureau 2014). Problem‑oriented policing (POP) evaluations likewise report a small yet reliable decline in crime and disorder when officers apply the SARA cycle to diagnose and address local problems (Weisburd et al. 2010). At the same time, cost‑of‑crime analyses reveal that felonies impose orders‑of‑magnitude larger social losses than misdemeanours, making them a natural focal point for resource allocation (McCollister, French, & Fang 2010). Recent optimisation work further argues that reallocating patrol units according to deterrence elasticities could cut expected social harm by up to 15 percent (He, Li, & Zhao 2023).
+
+Despite these insights, two notable gaps remain. First, most empirical studies rely on pre‑defined hot spots or supervised models calibrated to past incident counts, limiting their ability to capture the fluid, non‑stationary nature of urban crime. Second, few papers integrate environmental exposure, police deployment, and felony severity into a single predictive framework. To better address this issue, this project builds three different models to predict: i) the likelihood of a crime being a felony (binary classification); ii) which felony category a crime falls under (multi-classification); iii) what felony severity score of a crime new reported in DC would be (regression task). This project offers a data‑driven tool for D.C. agencies seeking to optimise deployment and reduce the social costs of violent and high‑impact offences.
+
 # Set up
 
 ```{r}
@@ -936,14 +942,14 @@ ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
 
 ## Explanation on Outcome Variable
 
-In this regression task, the outcome variable is `felony_severity_trans`, which is a transformed version of the original felony_severity score using the **Yeo-Johnson transformation**. The original score ranged from 0 to 7, reflecting the seriousness of the felony based on sentence length and social cost. For example, `homicide` is scored as 7, while `motor vehicle theft` is scored as 1. Although this score is technically ordinal (ranked categories), we treat it as approximately continuous for modeling purposes. This is a common approach in applied research when the levels are evenly spaced and reflect meaningful differences ([Robitzsch, 2020](https://doi.org/10.3389/feduc.2020.589965)). For instance, the gap between scores of 1 and 2 can be interpreted similarly to the gap between 5 and 6. This treatment allows us to conduct standard regression models.
+In this regression task, the outcome variable is `felony_severity_trans`, which is a transformed version of the original `felony_severity` score using the [**Yeo-Johnson transformation**](https://feature-engine.trainindata.com/en/1.8.x/user_guide/transformation/YeoJohnsonTransformer.html). The original score ranged from 0 to 7, reflecting the seriousness of the felony based on sentence length and social cost. For example, `homicide` is scored as 7, while `motor vehicle theft` is scored as 1. Although this score is technically ordinal (ranked categories), we treat it as approximately continuous for modeling purposes. This is a common approach in applied research when the levels are evenly spaced and reflect meaningful differences ([Robitzsch, 2020](https://doi.org/10.3389/feduc.2020.589965)). For instance, the gap between scores of 1 and 2 can be interpreted similarly to the gap between 5 and 6. This treatment allows us to conduct standard regression models.
 
 However, the distribution of `felony_severity` is skewed due to the rarity of severe crimes like `arson` and `homicide`, which can distort model performance. To address this, we applied the **Yeo-Johnson transformation** to the outcome variable. This transformation preserves the relative severity ranking, but reduces skewness and pulls in extreme values, improving model performance by better meeting assumptions of normality and homoscedasticity.
 
 After transformation, the values are no longer on the original 0–7 scale. For example, the eight unique severity levels were transformed to:
 
 ```{r}
-unique(crime_train$felony_severity_trans)
+sort(unique(crime_train$felony_severity_trans))
 ```
 
 These numbers are not directly interpretable in real-world terms, but they retain the ordering of crime severity and provide a statistically stable basis for modeling.
@@ -1044,13 +1050,12 @@ rf_wf_reg <- workflow() |>
 
 ### Model 3: XGBoost Regression with All Features
 
-This model leverages all available features to predict `felony_severity_trans`, a transformed version of felony severity. It includes demographic, spatial, temporal, and contextual predictors. We again apply a Yeo-Johnson transformation to the outcome and clean predictors using normalization, correlation filtering, and dummy encoding.
+This model leverages all available features to predict `felony_severity_trans`, a transformed version of felony severity. It includes demographic, spatial, temporal, and contextual predictors. We apply normalization, correlation filtering, and dummy encoding to prepare predictors.
 
 ```{r}
 #| label: crime_rec_xgb_reg
-crime_rec_xgb_reg <- recipe(felony_severity ~ ., data = crime_train) |>
-  step_rm(felony_flag) |>
-  step_YeoJohnson(all_outcomes()) |>  # transform skewed outcome
+crime_rec_xgb_reg <- recipe(felony_severity_trans ~ ., data = crime_train) |>
+  step_rm(felony_flag, felony_severity) |>  # remove original outcome columns
   step_date(report_date_parsed, features = "dow", label = TRUE) |>
   step_mutate(
     yday = lubridate::yday(report_date_parsed),
@@ -1129,7 +1134,7 @@ rf_grid_reg <- grid_random(
 # Tune model
 rf_res_reg <- tune_grid(
   rf_wf_reg,
-  resamples = crime_folds,
+  resamples = crime_folds_reg,
   grid = rf_grid_reg,
   metrics = reg_metrics,
   control = control_grid(save_pred = TRUE),
@@ -1159,7 +1164,7 @@ xgb_grid_reg <- grid_random(
 )
 
 # Tune with cross-validation
-xgb_res <- tune_grid(
+xgb_res_reg <- tune_grid(
   xgb_wf_reg,
   resamples = crime_folds_reg,
   grid = xgb_grid_reg,
@@ -1169,7 +1174,7 @@ xgb_res <- tune_grid(
 )
 
 # Select best hyperparameters
-best_xgb <- select_best(xgb_res, metric = "rmse")
+best_xgb <- select_best(xgb_res_reg, metric = "rmse")
 
 # Finalize and fit model
 final_xgb_wf <- finalize_workflow(xgb_wf_reg, best_xgb)
@@ -1178,69 +1183,108 @@ final_xgb_fit <- fit(final_xgb_wf, data = crime_train)
 
 ## Interpretation
 
-### Vraible Importance
+### Variable Importance
+
+Although linear regression does not provide built-in feature importance, we inspect standardized regression coefficients (β) to assess influence.
 
 ```{r}
-# Linear Regression doesn't have built-in importance, so skip
+lm_fit |> 
+  extract_fit_parsnip() |>
+  tidy() |>
+  arrange(desc(abs(estimate)))
+```
 
+Accoding to the table above, the strongest predictors of felony severity (in transformed scale) include:
+
+-   `method_OTHERS`(β = -1.69): Crimes with unspecified methods tend to have lower predicted severity.
+
+-   `shift_MIDNIGHT`(β = 0.30) and `shift_EVENING`(β = 0.06): Crimes that happen around midnight and evening are predicted to be more severe.
+
+-   `black_pct` and `foreign_born_pct` have small but statistically significant effects on predicted severity. A higher percentage of Black residents slightly increases the predicted score, while a higher percentage of foreign-born residents slightly lowers it.
+
+These results should be interpreted with caution, as they might be affected by other potential confounding factors.
+
+**Note: all predictors were standardized and the outcome was transformed, so coefficients represent relative, not direct effects on severity.**
+
+```{r}
 # Random Forest importance
 rf_model_reg <- extract_fit_parsnip(final_rf_fit_reg)
 vip(rf_model_reg, num_features = 20)
+```
 
+`method_OTHERS` and `shift_MIDNIGHT` are again the most influential features. Several distance-based features, such as distance to banks, grocery stores, liquor stores and free WiFi, also play meaningful roles, suggesting that spatial proximity to certain infrastructure may be predictive of felony severity.
+
+```{r}
 # XGBoost importance
 xgb_model_reg <- extract_fit_parsnip(final_xgb_fit)
 vip(xgb_model_reg, num_features = 20)
 
-
 ```
 
-### Evaluate on Test Set
+Though the importance values are more concentrated. The `method_OTHERS`, `shift_MIDNIGHT` and `black_pct` dominate, while demographic variables such as `foreign_born_pct`, `poverty_rate` and `age65plus_pct` have smaller but non-zero contributions.
+
+### Interpreting Model Predictions
+
+All three models were trained using `felony_severity_trans`, the Yeo-Johnson transformed version of the original severity score. While this transformation helps improve model performance and satisfy statistical assumptions, the predicted values are no longer on the familiar 0–7 scale.
+
+To make the predictions directly interpretable, we apply an **inverse Yeo-Johnson transformation** to the model outputs. This step converts `.pred` values back to the original `felony_severity` scale, allowing for meaningful evaluation using `RMSE` and `R-squared`. These evaluation metrics now reflect prediction error and explained variance in the original severity score, which ranges from 0 (least severe) to 7 (most severe).
+
+#### Evaluate on Test Set
 
 ```{r}
 # Linear Regression - Test
 lm_test_pred <- predict(lm_fit, new_data = crime_test) |> 
+  mutate(.pred = predict(yj_obj, newdata = .pred, inverse = TRUE)) |>  # inverse transformation
   bind_cols(crime_test |> select(felony_severity))
 
 metrics(lm_test_pred, truth = felony_severity, estimate = .pred)
 
 # Random Forest - Test
 rf_test_pred <- predict(final_rf_fit_reg, new_data = crime_test) |> 
+  mutate(.pred = predict(yj_obj, newdata = .pred, inverse = TRUE)) |>
   bind_cols(crime_test |> select(felony_severity))
 
 metrics(rf_test_pred, truth = felony_severity, estimate = .pred)
 
 # XGBoost - Test
 xgb_test_pred <- predict(final_xgb_fit, new_data = crime_test) |> 
+  mutate(.pred = predict(yj_obj, newdata = .pred, inverse = TRUE)) |>
   bind_cols(crime_test |> select(felony_severity))
 
 metrics(xgb_test_pred, truth = felony_severity, estimate = .pred)
 
-
 ```
 
-### Evaluate on Implementation Set
+After evaluating model performance on the held-out test set using RMSE, R-squared, and MAE after applying inverse transformation. Linear regression showed weak performance, with an RMSE of 1.83 and R² of 0.15, capturing little variance. Random forest performed best, with an RMSE of 1.50 and R² of 0.52. XGBoost had similar RMSE to linear regression but slightly better R² at 0.24.
+
+#### Evaluate on Implementation Set
 
 ```{r}
 # Linear Regression - Implementation
 lm_impl_pred <- predict(lm_fit, new_data = crime_enriched_implement) |> 
+  mutate(.pred = predict(yj_obj_impl, newdata = .pred, inverse = TRUE)) |> 
   bind_cols(crime_enriched_implement |> select(felony_severity))
 
 metrics(lm_impl_pred, truth = felony_severity, estimate = .pred)
 
 # Random Forest - Implementation
 rf_impl_pred <- predict(final_rf_fit_reg, new_data = crime_enriched_implement) |> 
+  mutate(.pred = predict(yj_obj_impl, newdata = .pred, inverse = TRUE)) |>
   bind_cols(crime_enriched_implement |> select(felony_severity))
 
 metrics(rf_impl_pred, truth = felony_severity, estimate = .pred)
 
 # XGBoost - Implementation
 xgb_impl_pred <- predict(final_xgb_fit, new_data = crime_enriched_implement) |> 
+  mutate(.pred = predict(yj_obj_impl, newdata = .pred, inverse = TRUE)) |>
   bind_cols(crime_enriched_implement |> select(felony_severity))
 
 metrics(xgb_impl_pred, truth = felony_severity, estimate = .pred)
 
 
 ```
+
+On the 2023 implementation data, linear regression and XGBoost failed to generalize, with RMSEs of 7.06 and 6.62, and R² values near zero. In contrast, random forest maintained strong performance with an RMSE of 1.34 and R² of 0.53.
 
 ### Collect all metrics into one table
 
@@ -1249,7 +1293,6 @@ all_metrics_reg <- bind_rows(
   mutate(metrics(lm_test_pred, truth = felony_severity, estimate = .pred), model = "Linear Regression", set = "Test"),
   mutate(metrics(rf_test_pred, truth = felony_severity, estimate = .pred), model = "Random Forest", set = "Test"),
   mutate(metrics(xgb_test_pred, truth = felony_severity, estimate = .pred), model = "XGBoost", set = "Test"),
-  
   mutate(metrics(lm_impl_pred, truth = felony_severity, estimate = .pred), model = "Linear Regression", set = "Implementation"),
   mutate(metrics(rf_impl_pred, truth = felony_severity, estimate = .pred), model = "Random Forest", set = "Implementation"),
   mutate(metrics(xgb_impl_pred, truth = felony_severity, estimate = .pred), model = "XGBoost", set = "Implementation")
@@ -1264,22 +1307,37 @@ all_metrics_reg <- bind_rows(
 all_metrics_reg |>
   filter(.metric == "rmse") |>
   ggplot(aes(x = model, y = .estimate, fill = set)) +
+    scale_fill_manual(values = c("Test" = "#56B4E9", "Implementation" = "steelblue")) +
   geom_bar(stat = "identity", position = "dodge") +
   labs(title = "RMSE Comparison across Models and Datasets",
        x = "Model",
        y = "RMSE") +
-  theme_minimal()
+  theme_classic() +
+  theme(
+    text = element_text(family = "serif") 
+  )
 
 # Plot R-squared Comparison
 all_metrics_reg |>
   filter(.metric == "rsq") |>
   ggplot(aes(x = model, y = .estimate, fill = set)) +
   geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Test" = "#56B4E9", "Implementation" = "steelblue")) +
   labs(title = "R-squared Comparison across Models and Datasets",
        x = "Model",
        y = "R-squared") +
-  theme_minimal()
+  theme_classic() +
+  theme(
+    text = element_text(family = "serif") 
+  )
+
 ```
+
+After comparing model performance across test and implementation sets using `RMSE` and `R-squared`, the results show that `Random Forest` outperforms both `Linear Regression` and `XGBoost` in predictive accuracy and generalizability. It achieves the lowest RMSE and highest R² in both datasets, suggesting that it captures stable and generalizable patterns in the data. In contrast, `Linear Regression` and `XGBoost` perform relatively well on the test set but fail to generalize to 2023 data, indicating overfitting.
+
+Importantly, the `Random Forest` model used in this task relies only on spatial and situational predictors, such as proximity to liquor stores, grocery outlets, public Wi-Fi zones, and timing features like shift and day of week. It **excludes** all socioeconomic indicators. That way this model still achieves high predictive accuracy suggests that **spatial context alone provides meaningful signals about felony severity risk across tracts**.
+
+From a policy perspective, this finding supports efforts to incorporate environmental exposure and situational context into crime prevention strategies. Rather than relying only on historical crime counts or demographic profiling, city agencies could use this model to identify high-severity risk areas based on **public infrastructure and land use patterns**, and prioritize patrols or intervention accordingly. This aligns with the broader goal of reducing the social costs of crime by focusing on where severe offenses are more likely to occur, even in the absence of full socioeconomic data.
 
 # Appendix
 
@@ -1349,9 +1407,7 @@ Here we assign a `felony_severity` score to each major offense type, using the [
 
 -   **MOTOR VEHICLE THEFT** has a higher monetary cost than **BURGLARY**, but both offenses carry similar CHI sentence days (20). However, **BURGLARY** often involves unlawful entry into private residences, violating a victim’s sense of safety and security. This intrusion into personal space is considered more psychologically harmful and socially disruptive than property theft alone, which is why burglary is ranked higher in severity.
 
--   
-
-    -   **THEFT F/AUTO** and **THEFT/OTHER** are not classified as felonies in this model; they receive a score of 0 despite having minor CHI and cost estimates. While [D.C. law](https://code.dccouncil.gov/us/dc/council/code/sections/22-3212) does consider theft exceeding \$1,000 as a felony, we exclude these categories because the offense labels in the dataset do not reliably distinguish petty theft from felony-level theft. Without clear thresholds or legal classifications in the `offense` variable, treating all theft as non-felony ensures greater consistency in modeling.
+-   **THEFT F/AUTO** and **THEFT/OTHER** are not classified as felonies in this model; they receive a score of 0 despite having minor CHI and cost estimates. While [D.C. law](https://code.dccouncil.gov/us/dc/council/code/sections/22-3212) does consider theft exceeding \$1,000 as a felony, we exclude these categories because the offense labels in the dataset do not reliably distinguish petty theft from felony-level theft. Without clear thresholds or legal classifications in the `offense` variable, treating all theft as non-felony ensures greater consistency in modeling.
 
 ### Add Features
 
