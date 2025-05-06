@@ -422,3 +422,83 @@ ggplot(tract_sf_joined) +
   )
 
 ```
+
+
+
+```{r}
+
+# may 6th new try for charts
+
+# first: bar graph - day of the week distribution by felony severity
+
+weekday <- multiclass_train |>
+  mutate(weekday = wday(report_date_parsed, label = TRUE, abbr = FALSE ))
+
+ggplot(weekday, aes(x = weekday, fill = felony_severity)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Felony Severity by Day of the Week",
+    x = "Day of the Week", 
+    y = "Number of Crimes"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 15),
+    axis.text = element_text(size = 8)
+  )
+
+# Second: line graph - black pct on the y axis, felony severity on the x axis
+
+black <- multiclass_train |>
+  group_by(felony_severity) |>
+  summarise(average_black = mean(black_pct, na.rm = TRUE))
+
+ggplot(black, aes(x = felony_severity, y = average_black, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Average Black Population by Felony Severity",
+    x = "Felony Severity",
+    y = "Black Population PCT") +
+  theme_minimal() 
+
+# Third: line graph - foreign born on the y axis, felony severity on the x axis
+
+foreign <- multiclass_train |>
+  group_by(felony_severity) |>
+  summarise(average_foreign = mean(foreign_born_pct, na.rm = TRUE))
+
+ggplot(foreign, aes(x = felony_severity, y = average_foreign, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Average Foreign Born Population by Felony Severity",
+    x = "Felony Severity",
+    y = "Foreign Born PCT"
+  ) +
+  theme_minimal()
+
+# Fourth: Facet wrap - map showing felony rate in each census tract
+
+facetwrap_ready <- multiclass_train |>
+  group_by(tract, felony_severity) |>
+  summarise(crimecount = n())
+
+dc_tract_sf <- st_read("~/Desktop/final-project/data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
+
+# tract_sf_newjoined <- left_join(dc_tract_sf, facetwrap_ready, by = "tract")
+
+tract_sf_newjoined <- dc_tract_sf |> 
+  left_join(facetwrap_ready, by = c("TRACTCE" = "tract"))
+
+ggplot(tract_sf_newjoined) +
+  geom_sf(aes(fill = crimecount)) +
+  facet_wrap(~felony_severity) +
+  labs(
+    title = "Crime Count by Tract and Felony Severity"
+  ) +
+  theme_minimal()
+
+######need to revise fourth map codes######
+
+```
