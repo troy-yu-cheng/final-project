@@ -1,0 +1,568 @@
+---
+title: "Felony Category Multi-classification"
+author: "Sarah Krause and Minji Kang"
+format:
+  html:
+    embed-resources: true
+editor: visual
+execute:
+  warning: false
+---
+
+These first two code chunks do not need to be merged / copied and pasted into the index file (just loading libraries and reading in the data).
+
+```{r}
+library(tidyverse)
+library(readr)
+library(haven)
+library(lubridate)
+library(tidymodels)
+library(tidycensus)
+library(janitor)
+library(sf)
+library(plotly)
+library(themis)
+library(vip)
+library(ranger)
+library(xgboost)
+library(rlang)
+```
+
+```{r}
+# read in the data
+
+
+crime <- read_csv("data/crime_enriched_acs_nona2.csv")
+
+#crime <- read_csv("~/Desktop/final-project/data/crime_enriched_acs_nona.csv")
+
+
+```
+
+In addition to knowing whether a crime is a felony, it is also useful for law enforcement to know the severity of the felony, since several different crime categories are classified as felonies and each require different resources and police response.
+
+In this section, we will build on the binary classification of crimes as felony or not felony by creating a multi-classification model to classify crimes based on the felony severity level. The outcome variable is 'felony_severity,' which was derived from the 'offense' variable in the Crime Incidents datasets (2008-2025) from DC Open Data. Felony_severity contains seven different severity levels, ranging from 0 (not a felony) to 7 (homicide) (See appendix). However, our multiclass classification candidate models will only include felonies, so felony severity level 0 will be removed from the dataset.
+
+The goal of this multi-classification model is to further enhance the ability of law enforcement in DC to effectively allocate resources by forecasting the relative severity of different felonies committed in the District.
+
+Replicating the steps used above for the binary classification model, we split the data to use 2019-2022 for training and 2023 for testing and implementation. We selected the same predictor variables used above from the 'crime_enriched_acs_nona' merged dataset.
+
+## Prepare the Data
+
+```{r}
+# Select variables of interest for modeling
+multiclass_vars <- c(
+  "felony_severity", # outcome variable
+  "x", "y", "latitude", "longitude", "year",
+  "shift", "method", "tract", "report_date_parsed",
+
+  # GIS contextual features
+  "in_liquor_moratorium_zone", "nearest_liquorstore_dist", "near_liquorstore_200m",
+  "near_wifi_100m", "nearest_wifi_dist",
+  "in_lowfood_zone",
+  "nearest_grocery_dist", "near_grocery_300m",
+  "nearest_bank_dist",
+  "near_bank_250m", 
+  "in_vending_zone", 
+  "police_sector", 
+  "in_military_base",
+
+  # ACS socioeconomic features
+  "poverty_rate", "unemployed_rate",
+  "black_pct", "hispanic_pct","foreign_born_pct", 
+  "hsplus_pct", 
+  "under18_pct", "age65plus_pct"
+)
+
+# Keep only selected variables
+crime_multiclass <- crime |> 
+  select(all_of(multiclass_vars)) |>
+  filter(felony_severity > 0)
+
+# Define training data (2019-2022)
+crime_multiclass_small <- crime_multiclass |>
+  filter(year >= 2019, year < 2023)
+
+# Define implementation/test data (2023)
+crime_multiclass_implement <- crime_multiclass |>
+  filter(year == 2023)
+
+# Adjust variable data types for training data
+crime_multiclass_small <- crime_multiclass_small |> 
+  mutate(
+    report_date_parsed = as.Date(report_date_parsed),
+         felony_severity = factor(felony_severity)
+         )
+
+# Adjust variable data types for implementation data
+crime_multiclass_implement <- crime_multiclass_implement |> 
+  mutate(
+    report_date_parsed = as.Date(report_date_parsed),
+         felony_severity = factor(felony_severity)
+         )
+```
+
+### Split Data
+
+```{r}
+set.seed(123)
+
+multiclass_split <- initial_split(crime_multiclass_small, prop = 0.8, strata = felony_severity)
+
+multiclass_train <- training(multiclass_split)
+
+multiclass_test <- testing(multiclass_split)
+```
+
+### EDA on Training Set
+
+First, we examine the distribution of the outcome variable `felony_severity`.
+
+```{r}
+# Check class imbalance in the target variable
+multiclass_train |> 
+  count(felony_severity) |> 
+  mutate(pct = n / sum(n))
+
+ggplot(multiclass_train, aes(x = felony_severity)) +
+  geom_bar() +
+  scale_y_continuous(n.breaks = 10) +
+  labs(title = "Number of Felonies in Each Category",
+       x = "Felony Severity Category",
+       y = "Count") +
+  theme_minimal()
+
+```
+
+40% of the crimes are classified as felony severity 1, corresponding to 'motor vehicle theft,' which is the lowest severity level among felonies.
+
+# Select Error Metric
+
+For our multi-classification problem, accuracy is the most appropriate error metric, measuring how often the classifier is correct. Accuracy is defined as:
+
+$$
+\frac{\text{TP}}{\text{total}}
+$$
+
+True positives are defined as the cases where the model correctly classifies crimes as 0, 1, 2, 3, 4, 5, 6, or 7 felony severity, and total is the total number of predictions.
+
+## Candidate Model 1: Random Forest Model
+
+Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity. Because felony severity level 1 is disproportionately represented in the dataset, we will downsample felony_severity.
+
+```{r}
+# recipe
+random_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_downsample(felony_severity) |>
+  step_rm(report_date_parsed) |>
+  step_mutate(method = factor(method)) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+# model
+random_model <- rand_forest(
+  trees = 200, 
+  mtry = 2,
+  min_n = 5) |>
+  set_mode("classification") |>
+  set_engine("ranger",
+             importance = "impurity",
+             num.threads = 4)
+
+# workflow 
+random_wf <- workflow() |>
+  add_recipe(random_newrecipe) |>
+  add_model(random_model)
+
+# fit the model
+random_fit <- random_wf |>
+  fit(data = multiclass_train)
+
+# generate predictions 
+random_pred <- predict(random_fit, multiclass_test, type = "class") |>
+  bind_cols(multiclass_test)
+
+# calculate metrics 
+random_pred |>
+  recall(truth = felony_severity, estimate = .pred_class)
+
+random_pred |>
+  precision(truth = felony_severity, estimate = .pred_class)
+
+random_pred
+
+conf_mat(data = random_pred,
+         truth = felony_severity,
+         estimate = .pred_class)
+
+accuracy(data = random_pred, truth = felony_severity, estimate = .pred_class)
+
+```
+
+The overall accuracy rate for our random forest model is 26.54%, showing that overall, the model is has a weak ability to predict the accurate felony severity category.
+
+Calculating precision and accuracy for each class provides some insight into how the model performs by class: 
+
+```{r} 
+# need to insert roxygen skeleton 
+
+multiclass_metrics <- function(x, truth, category, estimate) {
+  
+  prec_rec <- x |>
+    summarize(
+      true_positives = sum({{ truth }} == category & {{ estimate }} == category),
+      false_positives = sum({{ estimate }} == category & {{ truth }} != category),
+      false_negatives = sum({{ truth }} == category & {{ estimate }} != category)
+    ) |>
+    mutate(
+      precision = true_positives / (true_positives + false_positives),
+      recall = true_positives / (true_positives + false_negatives)
+    ) |>
+    select(precision, recall)
+  
+  list(prec_rec$precision, prec_rec$recall)
+
+}
+```
+
+```{r}
+# Class 1
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 1, estimate = .pred_class)
+
+# Class 2
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 2, estimate = .pred_class)
+
+# Class 3
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 3, estimate = .pred_class)
+
+# Class 4
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 4, estimate = .pred_class)
+
+# Class 5
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 5, estimate = .pred_class)
+
+# Class 6
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 6, estimate = .pred_class)
+
+# Class 7
+multiclass_metrics(x = random_pred, truth = felony_severity, category = 7, estimate = .pred_class)
+```
+
+```{r}
+# Macro and micro precision 
+random_pred |>
+  precision(truth = felony_severity, estimate = .pred_class, 
+            estimator = "macro")
+
+random_pred |>
+  precision(truth = felony_severity, estimate = .pred_class, 
+            estimator = "micro")
+
+# Macro and micro recall
+random_pred |>
+  recall(truth = felony_severity, estimate = .pred_class, 
+            estimator = "macro")
+
+random_pred |>
+  recall(truth = felony_severity, estimate = .pred_class, 
+            estimator = "micro")
+```
+
+
+```{r}
+# Variable importance for random forest
+random_fit |>
+  extract_fit_parsnip() |>
+  vip(num_features = 20) %>% #we are using this pipe to make sure the argument works
+  .$data |>
+  mutate (
+    importance = Importance / max(Importance),
+    variable = fct_reorder(Variable, importance)
+  ) |>
+  ggplot(aes(x = importance, y = variable, fill = importance)) +
+  geom_col() +
+  labs(
+    title = "variable importance of random forest",
+    x = "normalized importance",
+    y = "variable"
+  )
+```
+
+
+Method: 'black_pct' is the most important factor, with a normalized importance of 1. This value indicates that total number of black population in each tract.
+
+I want to create some kind of visualization or something to show why that might be happening.
+
+## Candidate Model 2: CART Model
+
+Our second candidate model is a CART (classification and regression tree) model, stratified on felony_severity because the felony_severity classes are not equal. We will use five-fold cross-validation and tune tree depth, cost complexity, and the minimum number of nodes to optimize the model.
+
+```{r}
+# cross-validation
+set.seed(123)
+cross_validation <- vfold_cv(multiclass_train, v = 5, strata = felony_severity)
+
+# recipe
+cart_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_downsample(felony_severity) |>
+  step_rm(report_date_parsed) |>
+  step_mutate(method = factor(method)) |>
+  step_zv(all_predictors()) |>
+  step_novel(all_factor_predictors()) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors())
+  
+
+# cart model object
+cart_model <- decision_tree(
+  tree_depth = tune(),
+  cost_complexity = tune(),
+  min_n = tune()
+) |>
+  set_engine(engine = "rpart") |>
+  set_mode(mode = "classification")
+
+# set up tuning grid
+cart_grid <- grid_regular(
+  cost_complexity(range = c(0.0001, 0.1)),
+  tree_depth(range = c(3, 15)),
+  min_n(),
+  levels = 5
+)
+
+# cart workflow
+cart_wf <- workflow() |>
+  add_recipe(cart_newrecipe) |>
+  add_model(cart_model)
+
+# test and choose best hyperparameters
+cart_test <- cart_wf |>
+  tune_grid(resamples = cross_validation,
+            grid = cart_grid,
+            metrics = metric_set(recall, roc_auc, accuracy))
+
+cart_test |>
+  collect_metrics()
+
+cart_test |>
+  show_best()
+
+# finalize workflow
+final_cart_wf <- cart_wf |>
+  finalize_workflow(select_best(cart_test)
+)
+
+# fit
+cart_fit <- final_cart_wf |>
+  fit(data = multiclass_train)
+
+# predictions
+predictions <- bind_cols(
+  multiclass_test,
+  predict(object = cart_fit, new_data = multiclass_test),
+  predict(object = cart_fit, new_data = multiclass_test, type = "prob")
+) 
+select(predictions, felony_severity, starts_with(".pred"))
+
+# confusion matrix
+conf_mat(data = predictions,
+         truth = felony_severity,
+         estimate = .pred_class)
+
+# recall and precision
+recall(data = predictions,
+       truth = felony_severity,
+       estimate = .pred_class)
+
+precision(data = predictions,
+          truth = felony_severity,
+          estimate = .pred_class)
+
+accuracy(data = predictions,
+         truth = felony_severity,
+         estimate = .pred_class)
+
+```
+
+
+Our CART model is only correctly predicting the majority class (felony_severity = 1), and therefore not learning the minority classes. This is likely due to the class imbalance, even though we downsampled felony severity. 
+
+## Candidate Model 3: KNN Model
+
+```{r}
+# recipe
+knn_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
+  step_downsample(felony_severity) |>
+  step_rm(report_date_parsed) |>
+  step_mutate(method = factor(method)) |>
+  step_zv(all_predictors()) |>
+  step_novel(all_factor_predictors()) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors()) 
+
+# model
+knn_model <- nearest_neighbor( neighbors = 5) |>
+  set_engine(engine = "kknn") |>
+  set_mode(mode = "classification")
+
+# workflow
+knn_wf <- workflow() |>
+  add_recipe(knn_newrecipe) |>
+  add_model(knn_model)
+
+# fit the model
+knn_fit <- fit(knn_wf, data = multiclass_train)
+
+# generate predictions
+knn_preds <- predict(knn_fit, new_data = multiclass_test, type = "class") |>
+  bind_cols(multiclass_test)
+
+# calculate metrics 
+conf_mat(data = knn_preds, truth = felony_severity, estimate = .pred_class)
+
+metrics(knn_preds, truth = felony_severity, estimate = .pred_class)
+
+```
+
+```{r}
+# Macro and micro precision 
+knn_preds |>
+  precision(truth = felony_severity, estimate = .pred_class, 
+            estimator = "macro")
+
+knn_preds |>
+  precision(truth = felony_severity, estimate = .pred_class, 
+            estimator = "micro")
+
+# Macro and micro recall
+knn_preds |>
+  recall(truth = felony_severity, estimate = .pred_class, 
+            estimator = "macro")
+
+knn_preds |>
+  recall(truth = felony_severity, estimate = .pred_class, 
+            estimator = "micro")
+```
+
+The accuracy rate is 14.53% for the KNN model.
+
+
+```{r}
+
+# map first try?
+
+dc_tract_sf <- st_read("~/Desktop/final-project/data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
+
+crime_sf <- crime |>
+  st_as_sf(coords = c("longitude", "latitude"))
+
+ggplot(data = crime_sf) +
+  geom_sf(aes(color = felony_severity), alpha = 0.5) +
+  theme_minimal()
+
+
+
+
+
+
+tract_felrate <- multiclass_train |>
+  group_by(tract) |>
+  filter(felony_severity == 1) |>
+  summarize(
+    vehicletheft_rate = mean(as.numeric(as.character(felony_severity)))
+  )
+
+tract_sf_joined <- dc_tract_sf |> 
+  left_join(tract_felrate, by = c("TRACTCE" = "tract"))
+
+ggplot(tract_sf_joined) +
+  geom_sf(aes(fill = vehicletheft_rate), color = "white", size = 0.2) +
+    scale_fill_gradient(
+    low = "#d6e4f0",   
+    high = "#274472",
+    na.value = "grey90"
+  ) +
+  labs(title = "Vehicle Theft Rate by Census Tract") +
+  theme_classic() +
+  theme(
+    text = element_text(family ="serif")
+  )
+
+```
+
+```{r}
+
+# may 6th new try for charts
+
+# first: bar graph - day of the week distribution by felony severity
+
+weekday <- multiclass_train |>
+  mutate(weekday = wday(report_date_parsed, label = TRUE, abbr = FALSE ))
+
+ggplot(weekday, aes(x = weekday, fill = felony_severity)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Felony Severity by Day of the Week",
+    x = "Day of the Week", 
+    y = "Number of Crimes"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 15),
+    axis.text = element_text(size = 8)
+  )
+
+# Second: line graph - black pct on the y axis, felony severity on the x axis
+
+black <- multiclass_train |>
+  group_by(felony_severity) |>
+  summarise(average_black = mean(black_pct, na.rm = TRUE))
+
+ggplot(black, aes(x = felony_severity, y = average_black, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Average Black Population by Felony Severity",
+    x = "Felony Severity",
+    y = "Black Population PCT") +
+  theme_minimal() 
+
+# Third: line graph - foreign born on the y axis, felony severity on the x axis
+
+foreign <- multiclass_train |>
+  group_by(felony_severity) |>
+  summarise(average_foreign = mean(foreign_born_pct, na.rm = TRUE))
+
+ggplot(foreign, aes(x = felony_severity, y = average_foreign, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Average Foreign Born Population by Felony Severity",
+    x = "Felony Severity",
+    y = "Foreign Born PCT"
+  ) +
+  theme_minimal()
+
+# Fourth: Facet wrap - map showing felony rate in each census tract
+
+facetwrap_ready <- multiclass_train |>
+  group_by(tract, felony_severity) |>
+  summarise(crimecount = n())
+
+dc_tract_sf <- st_read("~/Desktop/final-project/data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
+
+# tract_sf_newjoined <- left_join(dc_tract_sf, facetwrap_ready, by = "tract")
+
+tract_sf_newjoined <- dc_tract_sf |> 
+  left_join(facetwrap_ready, by = c("TRACTCE" = "tract"))
+
+ggplot(tract_sf_newjoined) +
+  geom_sf(aes(fill = crimecount)) +
+  facet_wrap(~felony_severity) +
+  labs(
+    title = "Crime Count by Tract and Felony Severity"
+  ) +
+  theme_void()
+
+```
+
