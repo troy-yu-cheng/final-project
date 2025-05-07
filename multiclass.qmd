@@ -387,7 +387,7 @@ calc_class_metrics(x = random_pred, truth = felony_severity, class = 6, estimate
 calc_class_metrics(x = random_pred, truth = felony_severity, class = 7, estimate = .pred_class)
 ```
 
-The strongest performance is on class 1, the largest class. Class 4 is the second largest class, and class 4's recall and precision are relatively good, around 28%. Class 3 and class 6 are the worst performing classes in terms of precision and recall, which is not surprising because these classes are small.
+The strongest overall performance is on class 1, the largest class (precision = 40.8% and recall = 13.5%). Class 4 is the second largest class, and while class 4's precision is relatively good (34%), the recall is only 8%. The model is predicting a large amount of false negatives for class 4. Class 3 is the smallest class, and surprisingly, the recall is 66.7%, showing a relatively low number of false negatives. However, class 3's precision is only 6.7%, so the model often incorrectly predicts other classes as class 3. 
 
 ### Random Forest Variable Importance
 
@@ -413,30 +413,48 @@ random_fit |>
 
 under 18, hsplus, foreign born, longitude, poverty rate
 
-Interestingly, 'black_pct' is the most important factor, with a normalized importance of 1. This value indicates the percentage of the population that is Black in each tract. The following visualization shows the average percentage of the census tract that is Black within each felony severity category.
+Interestingly, 'under18_pct' is the most important factor, with a normalized importance of 1. This value indicates the percentage of the population that is under the age of 18 in each tract. The following visualization shows the average percentage of the census tract that is under 18 within each felony severity category.
 
 ```{r}
-black <- multiclass_train |>
+under_18 <- multiclass_train |>
   group_by(felony_severity) |>
-  summarise(average_black = mean(black_pct, na.rm = TRUE))
+  summarise(avg_under18 = mean(under18_pct, na.rm = TRUE))
 
-ggplot(black, aes(x = felony_severity, y = average_black, group = 1)) +
+ggplot(under_18, aes(x = felony_severity, y = avg_under18, group = 1)) +
   geom_line() +
   geom_point() +
   labs(
-    title = "Average African-American Population by Felony Severity",
+    title = "Average Percent of Community Under Age 18 by Felony Severity",
     x = "Felony Severity",
-    y = "Average Percent of of African-Americans in a Community") +
+    y = "Average Percent Under 18") +
   theme_minimal() 
 ```
 
-The highest felony severity category, 7, occurs at higher rates in predominantly Black communities, while class 2, a lower severity, occurs more frequently in predominantly White communities. The relationship between felony severity and the racial makeup of a community is not strictly linear, but the model has picked up on a relationship between race and crime.
+The highest felony severity category, 7, occurs at higher rates in communities with a larger percent of the community being under the age of 18. Classes 1 and 2, the lowest severity levels, occur more frequently in communities with a relatively small percentage of the community under the age of 18. The relationship between felony severity and the age makeup of a community is not strictly linear, but the model has picked up on a relationship between age and felony severity level.
 
-'Foreign_born_pct' was also an important variable. The following visualization shows the average percentage of a census tract that is foreign-born within each felony severity category.
+'hsplus_pct' was the second most important variable. This variable is the percentage of people in a census tract with greater than a high school level education.
 
 ```{r}
-# Third: line graph - foreign born on the y axis, felony severity on the x axis
+hs <- multiclass_train |>
+  group_by(felony_severity) |>
+  summarise(avg_hs = mean(hsplus_pct, na.rm = TRUE))
 
+ggplot(hs, aes(x = felony_severity, y = avg_hs, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Average Percent of Community with Greater than High School Education by Felony Severity",
+    x = "Felony Severity",
+    y = "Average Percent with Greater than High School Education in a Community"
+  ) +
+  theme_minimal()
+```
+
+Neighborhoods with higher rates of more than high school education tend to have higher rates of lower felony severity classes. Class 5 and 7 tend to occur in neighborhoods with lower rates of high school education, indicating a downwards trend. However, class 6 is the exception to this trend. 
+
+'Foreign_born_pct' was the third most important variable. The following visualization shows the average percentage of a census tract that is foreign-born within each felony severity category.
+
+```{r}
 foreign <- multiclass_train |>
   group_by(felony_severity) |>
   summarise(average_foreign = mean(foreign_born_pct, na.rm = TRUE))
@@ -450,10 +468,11 @@ ggplot(foreign, aes(x = felony_severity, y = average_foreign, group = 1)) +
     y = "Average Percent of Foreign-Born in a Community"
   ) +
   theme_minimal()
-
 ```
 
-Neighborhoods with higher rates of foreign-born tend to have higher rates of lower felony severities than higher severity levels, with class 6 as an exception to this trend.
+Interestingly, the graph shows a very similar pattern of the relationship between foreign-born makeup of the community and felony severity category as percent of the community with a greater than high school level education. 
+
+Neighborhoods with higher rates of foreign-born tend to have higher rates of lower felony severity levels than higher severity levels, with class 6 as an exception to this trend.
 
 ## Candidate Model 2: CART Model
 
@@ -638,13 +657,13 @@ KNN has the best within-class precision for class 1, the largest class, yet the 
 
 The CART model, despite having the highest accuracy rate of 40%, will be eliminated from consideration because it achieved this rate by predicting all classes as class 1.
 
-This leaves random forest or KNN. Random forest's accuracy rate was \~19%, while KNN's was \~12%. Random forest performs more accurately overall, but we will also consider the fact that our model has significant class imbalances. To compare the performance within each class, we will focus on classes 1, 4, 5, and 2 because those classes are the largest, respectively.
+This leaves random forest or KNN. Random forest's accuracy rate was ~17.8%, while KNN's was ~15.5%. Random forest performs slightly more accurately overall, but we will also consider the fact that our model has significant class imbalances. To compare the performance within each class, we will focus on classes 1, 4, 5, and 2 because those classes are the largest, respectively.
 
-Comparing with the random forest model's precision and recall within each class, KNN has lower precision than random forest within the 4 largest classes. However, in terms of within-class recall, KNN performs better than random forest for classes 1 and 2. For classes 4 and 5, random forest has better recall than KNN.
+Comparing with the random forest model's precision and recall within each class, KNN has lower precision than random forest within the 3/4 of the largest classes (class 2, 4, and 5). In terms of within-class recall, random forest performs better than KNN in 3/4 of the largest classes as well (class 1, 2, and 5). 
 
-As discussed in our selection of error metrics, recall is of particular importance for model evaluation because the consequences of a false negative are higher for police and communities than a false positive. However, because the models perform differently but equally well in terms of recall across classes (since they both have better recall on 2/4 classes of interest), we will turn to within-class precision and overall accuracy.
+As discussed in our selection of error metrics, recall is of particular importance for model evaluation because the consequences of a false negative are higher for police and communities than a false positive. 
 
-Random forest has better within-class precision and overall accuracy. Therefore, we will select random forest as the final model for implementation.
+Random forest has better within-class recall, as well as within-class precision and overall accuracy. Therefore, we will select random forest as the final model for implementation.
 
 ## Implementation
 
@@ -723,9 +742,9 @@ calc_class_metrics(x = multiclass_implement_results,
 
 ### Interpreting Final Model Results
 
-The final model's overall accuracy rate is 24.75%, so the model makes corret predictions about 25% of the time. The within-class recall and precision varies between classes.
+The final model's overall accuracy rate is 16.32%, so the model makes correct predictions about 16% of the time. The within-class recall and precision varies between classes.
 
-Class 1 had the best recall and precision, and class 3 had the worst, with an accuracy and precision of 0%.
+Class 1 had the precision, and class 4 had the best recall. The model performed the worst on class 3, with an accuracy and precision of 0%.
 
 The distribution of felony severities in the implementation data was very similar to the training data:
 
