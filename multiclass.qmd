@@ -300,6 +300,7 @@ Therefore, we will pay particular attention to recall. We are especially interes
 Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity. Because felony severity level 1 is disproportionately represented in the dataset, we will downsample felony_severity.
 
 ```{r}
+set.seed(123)
 # recipe
 random_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
   step_downsample(felony_severity, seed = 123) |>
