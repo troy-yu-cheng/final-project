@@ -175,6 +175,7 @@ ggplot(tract_sf_joined) +
     text = element_text(family ="serif")
   )
 ```
+
 This choropleth aligns with the distribution of felony severities across DC: Wards 3 and 4 have high rates of vehicle theft, while Wards 7 and 8 have lower rates due to the higher concentration of more severe felonies.
 
 The following choropleth shows the felony rate of each felony severity class in each census tract.
@@ -188,8 +189,6 @@ facetwrap
 
 dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
 
-# tract_sf_newjoined <- left_join(dc_tract_sf, facetwrap_ready, by = "tract")
-
 tract_sf_newjoined <- dc_tract_sf |> 
   left_join(facetwrap_ready, by = c("TRACTCE" = "tract"))
 
@@ -202,7 +201,7 @@ ggplot(tract_sf_newjoined) +
   theme_void()
 ```
 
-Each individual facet of the map shows the distribution of each felony severity class. Unsurprisingly, class 1 has the widest geographical distribution across the District, while class 3, which only had a 20 incidents total in the dataset, is quite sparse. Class 7, the most severe class, is highly concentrated in wards 7 and 8, yet still with less than 50 total in each census tract. 
+Each individual facet of the map shows the distribution of each felony severity class. Unsurprisingly, class 1 has the widest geographical distribution across the District, while class 3, which only had a 20 incidents total in the dataset, is quite sparse. Class 7, the most severe class, is highly concentrated in wards 7 and 8, yet still with less than 50 total in each census tract.
 
 Next, we examine the distribution of felony severity by day of the week, one of the explanatory variables used in our candidate models to predict felony severity class.
 
@@ -228,7 +227,7 @@ The chart shows that there is not a high variation in felony severities by day o
 
 # Error Metrics
 
-For our multi-classification problem, we will calculate overall model accuracy, micro- precision/recall, as well as precision and recall within each class. 
+For our multi-classification problem, we will calculate overall model accuracy, micro- precision/recall, as well as precision and recall within each class.
 
 ## Accuracy
 
@@ -242,7 +241,7 @@ True positives are defined as the cases where the model correctly classifies cri
 
 ## Precision and Recall by Class
 
-Precision and recall calculated by class focuses on each class individually. Each individual class is treated as a "positive" while all of the others are treated as a "negative." 
+Precision and recall calculated by class focuses on each class individually. Each individual class is treated as a "positive" while all of the others are treated as a "negative."
 
 Precision for an individual class is the fraction of instances correctly predicted to belong to a specific class among all of the instances the model predicted as belonging to that class. It is true positives over all positives (both true and false):
 
@@ -293,7 +292,7 @@ calc_class_metrics <- function(x, truth, class, estimate) {
 }
 ```
 
-Within-class metrics are appropriate for our purposes because we have significant class imbalance, with 40% of felonies classified as class 1. We are interested in how the model performs on the largest classes for practical purposes. A model that performs well at predicting the largest classes will have the greatest usefulness for police departments and law enforcement in the District. 
+Within-class metrics are appropriate for our purposes because we have significant class imbalance, with 40% of felonies classified as class 1. We are interested in how the model performs on the largest classes for practical purposes. A model that performs well at predicting the largest classes will have the greatest usefulness for police departments and law enforcement in the District.
 
 Therefore, we will pay particular attention to recall. We are especially interested in evaluating when the model mis-classifies a specific class as a negative. For law enforcement, a false negative potentially means ignoring or missing a felony incident, which has ramifications for the safety of the community and overall success of the police department in reponding to the needs of the community.
 
@@ -302,6 +301,7 @@ Therefore, we will pay particular attention to recall. We are especially interes
 Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity. Because felony severity level 1 is disproportionately represented in the dataset, we will downsample felony_severity.
 
 ```{r}
+set.seed(123)
 # recipe
 random_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
   step_downsample(felony_severity) |>
@@ -348,7 +348,7 @@ accuracy(data = random_pred, truth = felony_severity, estimate = .pred_class)
 
 ```
 
-The overall accuracy rate for our random forest model is 19.61%, showing that overall, the model is has a somewhat weak ability to predict the accurate felony severity category.
+The overall accuracy rate for our random forest model is 21.5%, showing that overall, the model is has a somewhat weak ability to predict the accurate felony severity category.
 
 Calculating precision and recall for each class provides some insight into how the model performs by class:
 
@@ -387,7 +387,7 @@ calc_class_metrics(x = random_pred, truth = felony_severity, class = 6, estimate
 calc_class_metrics(x = random_pred, truth = felony_severity, class = 7, estimate = .pred_class)
 ```
 
-The strongest performance is on class 1, the largest class. Class 4 is the second largest class, and class 4's recall and precision are relatively good, around 28%. Class 3 and class 6 are the worst performing classes in terms of precision and recall, which is not surprising because these classes are small. 
+The strongest performance is on class 1, the largest class. Class 4 is the second largest class, and class 4's recall and precision are relatively good, around 28%. Class 3 and class 6 are the worst performing classes in terms of precision and recall, which is not surprising because these classes are small.
 
 ### Random Forest Variable Importance
 
@@ -427,7 +427,7 @@ ggplot(black, aes(x = felony_severity, y = average_black, group = 1)) +
   theme_minimal() 
 ```
 
-The highest felony severity category, 7, occurs at higher rates in predominantly Black communities, while class 2, a lower severity, occurs more frequently in predominantly White communities. The relationship between felony severity and the racial makeup of a community is not strictly linear, but the model has picked up on a relationship between race and crime. 
+The highest felony severity category, 7, occurs at higher rates in predominantly Black communities, while class 2, a lower severity, occurs more frequently in predominantly White communities. The relationship between felony severity and the racial makeup of a community is not strictly linear, but the model has picked up on a relationship between race and crime.
 
 'Foreign_born_pct' was also an important variable. The following visualization shows the average percentage of a census tract that is foreign-born within each felony severity category.
 
@@ -450,7 +450,7 @@ ggplot(foreign, aes(x = felony_severity, y = average_foreign, group = 1)) +
 
 ```
 
-Neighborhoods with higher rates of foreign-born tend to have higher rates of lower felony severities than higher severity levels, with class 6 as an exception to this trend. 
+Neighborhoods with higher rates of foreign-born tend to have higher rates of lower felony severities than higher severity levels, with class 6 as an exception to this trend.
 
 ## Candidate Model 2: CART Model
 
@@ -553,8 +553,9 @@ knn_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) 
   step_mutate(method = factor(method)) |>
   step_zv(all_predictors()) |>
   step_novel(all_factor_predictors()) |>
-  step_dummy(all_nominal_predictors()) |>
-  step_normalize(all_numeric_predictors()) 
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors()) 
+  
 
 # model
 knn_model <- nearest_neighbor(neighbors = 5) |>
@@ -583,7 +584,8 @@ conf_mat(data = knn_preds, truth = felony_severity, estimate = .pred_class)
 
 accuracy(knn_preds, truth = felony_severity, estimate = .pred_class)
 ```
-The accuracy rate is 12.16% for the KNN model, which is lower than our random forest model.
+
+The accuracy rate is 11.226% for the KNN model, which is lower than our random forest model.
 
 Evaluating the within-class precision and accuracy will be useful for comparing to the performance of the random forest model.
 
@@ -621,13 +623,14 @@ calc_class_metrics(x = knn_preds, truth = felony_severity, class = 6, estimate =
 # Class 7
 calc_class_metrics(x = knn_preds, truth = felony_severity, class = 7, estimate = .pred_class)
 ```
+
 KNN has the best within-class precision for class 1, the largest class, yet the recall for class 1 is only 11%, meaning that there are a high number of false negatives. It also performs fairly well in the other largest classes (2, 4, and 5) in terms of its precision. However, recall also hovers around less than 15% for these three classes. Unsurprisingly, the model struggled to classify the smaller classes.
 
 ## Final Multiclass Classification Model Selection
 
 The CART model, despite having the highest accuracy rate of 40%, will be eliminated from consideration because it achieved this rate by predicting all classes as class 1.
 
-This leaves random forest or KNN. Random forest's accuracy rate was ~19%, while KNN's was ~12%. Random forest performs more accurately overall, but we will also consider the fact that our model has significant class imbalances. To compare the performance within each class, we will focus on classes 1, 4, 5, and 2 because those classes are the largest, respectively. 
+This leaves random forest or KNN. Random forest's accuracy rate was \~19%, while KNN's was \~12%. Random forest performs more accurately overall, but we will also consider the fact that our model has significant class imbalances. To compare the performance within each class, we will focus on classes 1, 4, 5, and 2 because those classes are the largest, respectively.
 
 Comparing with the random forest model's precision and recall within each class, KNN has lower precision than random forest within the 4 largest classes. However, in terms of within-class recall, KNN performs better than random forest for classes 1 and 2. For classes 4 and 5, random forest has better recall than KNN.
 
@@ -648,3 +651,94 @@ multiclass_implement_results <- predict(random_fit,
   bind_cols(crime_multiclass_implement |> 
   select(felony_severity))
 ```
+
+```{r}
+# final model's accuracy
+accuracy(multiclass_implement_results, truth = felony_severity, estimate = .pred_class)
+```
+
+```{r}
+# Class 1
+calc_class_metrics(x = multiclass_implement_results,
+                   truth = felony_severity,
+                   class = 1,
+                   estimate = .pred_class)
+```
+
+```{r}
+#Class 2
+calc_class_metrics(x = multiclass_implement_results,
+                   truth = felony_severity,
+                   class = 2,
+                   estimate = .pred_class)
+```
+
+```{r}
+#Class 3
+calc_class_metrics(x = multiclass_implement_results,
+                   truth = felony_severity,
+                   class = 3,
+                   estimate = .pred_class)
+```
+
+```{r}
+#Class 4
+calc_class_metrics(x = multiclass_implement_results,
+                   truth = felony_severity,
+                   class = 4,
+                   estimate = .pred_class)
+```
+
+```{r}
+#Class 5
+calc_class_metrics(x = multiclass_implement_results,
+                   truth = felony_severity,
+                   class = 5,
+                   estimate = .pred_class)
+```
+
+```{r}
+#Class 6
+calc_class_metrics(x = multiclass_implement_results,
+                   truth = felony_severity,
+                   class = 6,
+                   estimate = .pred_class)
+```
+
+```{r}
+#Class 7
+calc_class_metrics(x = multiclass_implement_results,
+                   truth = felony_severity,
+                   class = 7,
+                   estimate = .pred_class)
+```
+
+### Interpreting Final Model Results
+
+The final model's overall accuracy rate is 24.75%, so the model makes corret predictions about 25% of the time. The within-class recall and precision varies between classes.
+
+Class 1 had the best recall and precision, and class 3 had the worst, with an accuracy and precision of 0%.
+
+The distribution of felony severities in the implementation data was very similar to the training data:
+
+```{r}
+# Check class imbalance in the target variable
+crime_multiclass_implement |> 
+  count(felony_severity) |> 
+  mutate(pct = n / sum(n))
+
+ggplot(crime_multiclass_implement, aes(x = felony_severity)) +
+  geom_bar() +
+  scale_y_continuous(n.breaks = 10) +
+  labs(title = "Number of Felonies in Each Category",
+       x = "Felony Severity Category",
+       y = "Count") +
+  theme_minimal()
+
+```
+
+The implementation data only had 11 felonies of class 3, so it is unsurprising that the model failed to predict this class. Similarly, classes 6 and 7 have less than 300 observations, explaining the poor recall and precision for these classes.
+
+The final model is quite limited in its practical usefulness because of its relatively low accuracy rate and within-class precision and recall. The model could potentially be improved with different class specifications. Because the dataset is dominated by felony severity class 1, a different approach could be a binary classification model with motor vehicle theft defined as a positive outcome, and all other felonies defined as a negative outcome. This specification would have less class imbalance, which may enhance precision and recall.
+
+Overall, it is difficult to predict the severity of a felony due to the variety of features related to crime, including geographic factors, demographic variables, and temporal factors. Additional features that may improve model performance include past rates of crimes of different felony severity levels, since the overall distribution of felony severity follows a similar trend in the District across years.
