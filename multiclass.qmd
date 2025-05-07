@@ -302,7 +302,7 @@ Our first model is a random forest model using all of the predictors included in
 ```{r}
 # recipe
 random_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
-  step_downsample(felony_severity) |>
+  step_downsample(felony_severity, seed = 123) |>
   step_rm(report_date_parsed) |>
   step_mutate(method = factor(method)) |>
   step_dummy(all_nominal_predictors()) |>
@@ -347,7 +347,7 @@ accuracy(data = random_pred, truth = felony_severity, estimate = .pred_class)
 
 ```
 
-The overall accuracy rate for our random forest model is 25.8%, showing that overall, the model is has a somewhat weak ability to predict the accurate felony severity category.
+The overall accuracy rate for our random forest model is 17.8%, showing that overall, the model is has a somewhat weak ability to predict the accurate felony severity category.
 
 Calculating precision and recall for each class provides some insight into how the model performs by class:
 
@@ -410,6 +410,8 @@ random_fit |>
   )
 ```
 
+under 18, hsplus, foreign born, longitude, poverty rate
+
 Interestingly, 'black_pct' is the most important factor, with a normalized importance of 1. This value indicates the percentage of the population that is Black in each tract. The following visualization shows the average percentage of the census tract that is Black within each felony severity category.
 
 ```{r}
@@ -463,7 +465,7 @@ cross_validation <- vfold_cv(multiclass_train, v = 5, strata = felony_severity)
 
 # recipe
 cart_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
-  step_downsample(felony_severity) |>
+  step_downsample(felony_severity, seed = 123) |>
   step_rm(report_date_parsed) |>
   step_mutate(method = factor(method)) |>
   step_zv(all_predictors()) |>
@@ -481,6 +483,7 @@ cart_model <- decision_tree(
   set_engine(engine = "rpart") |>
   set_mode(mode = "classification")
 
+set.seed(123)
 # set up tuning grid
 cart_grid <- grid_regular(
   cost_complexity(range = c(0.0001, 0.1)),
@@ -550,7 +553,7 @@ Our third candidate Model is K-nearest neighbors (KNN). We selected 5 as the num
 ```{r}
 # recipe
 knn_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
-  step_downsample(felony_severity) |>
+  step_downsample(felony_severity, seed = 123) |>
   step_rm(report_date_parsed) |>
   step_mutate(method = factor(method)) |>
   step_zv(all_predictors()) |>
@@ -589,7 +592,7 @@ conf_mat(data = knn_preds, truth = felony_severity, estimate = .pred_class)
 accuracy(knn_preds, truth = felony_severity, estimate = .pred_class)
 ```
 
-The accuracy rate is 11.226% for the KNN model, which is lower than our random forest model.
+The accuracy rate is 15.5% for the KNN model, which is lower than our random forest model.
 
 Evaluating the within-class precision and accuracy will be useful for comparing to the performance of the random forest model.
 
