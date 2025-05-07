@@ -30,7 +30,7 @@ library(rlang)
 
 ```{r}
 # read in the data
-crime <- read_csv("data/crime_enriched_acs_nona2.csv")
+crime <- read_csv("data/crime_enriched_acs_nona.csv")
 ```
 
 In addition to knowing whether a crime is a felony, it is also useful for law enforcement to know the severity of the felony, since several different crime categories are classified as felonies and each require different resources and police response.
@@ -100,7 +100,6 @@ crime_multiclass_implement <- crime_multiclass_implement |>
 
 ```{r}
 set.seed(123)
-
 multiclass_split <- initial_split(crime_multiclass_small, prop = 0.8, strata = felony_severity)
 
 multiclass_train <- training(multiclass_split)
@@ -190,7 +189,7 @@ facetwrap
 dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
 
 tract_sf_newjoined <- dc_tract_sf |> 
-  left_join(facetwrap_ready, by = c("TRACTCE" = "tract"))
+  left_join(facetwrap, by = c("TRACTCE" = "tract"))
 
 ggplot(tract_sf_newjoined) +
   geom_sf(aes(fill = crimecount)) +
@@ -301,7 +300,6 @@ Therefore, we will pay particular attention to recall. We are especially interes
 Our first model is a random forest model using all of the predictors included in the dataset to predict the felony severity. Because felony severity level 1 is disproportionately represented in the dataset, we will downsample felony_severity.
 
 ```{r}
-set.seed(123)
 # recipe
 random_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) |>
   step_downsample(felony_severity) |>
@@ -325,6 +323,7 @@ random_wf <- workflow() |>
   add_recipe(random_newrecipe) |>
   add_model(random_model)
 
+set.seed(123)
 # fit the model
 random_fit <- random_wf |>
   fit(data = multiclass_train)
@@ -348,7 +347,7 @@ accuracy(data = random_pred, truth = felony_severity, estimate = .pred_class)
 
 ```
 
-The overall accuracy rate for our random forest model is 21.5%, showing that overall, the model is has a somewhat weak ability to predict the accurate felony severity category.
+The overall accuracy rate for our random forest model is 25.8%, showing that overall, the model is has a somewhat weak ability to predict the accurate felony severity category.
 
 Calculating precision and recall for each class provides some insight into how the model performs by class:
 
@@ -393,6 +392,7 @@ The strongest performance is on class 1, the largest class. Class 4 is the secon
 
 ```{r}
 # Variable importance for random forest
+set.seed(123)
 random_fit |>
   extract_fit_parsnip() |>
   vip(num_features = 20) %>% #we are using this pipe to make sure the argument works
@@ -494,11 +494,12 @@ cart_wf <- workflow() |>
   add_recipe(cart_newrecipe) |>
   add_model(cart_model)
 
+set.seed(123)
 # test and choose best hyperparameters
 cart_test <- cart_wf |>
   tune_grid(resamples = cross_validation,
             grid = cart_grid,
-            metrics = metric_set(recall, roc_auc, accuracy))
+            metrics = metric_set(accuracy))
 
 cart_test |>
   collect_metrics()
@@ -511,6 +512,7 @@ final_cart_wf <- cart_wf |>
   finalize_workflow(select_best(cart_test)
 )
 
+set.seed(123)
 # fit
 cart_fit <- final_cart_wf |>
   fit(data = multiclass_train)
@@ -569,6 +571,8 @@ knn_wf <- workflow() |>
 
 # fit the model
 final_knn_wf <- finalize_workflow(knn_wf, knn_model)
+
+set.seed(123)
 knn_fit <- fit(final_knn_wf, data = multiclass_train)
 
 # generate predictions
