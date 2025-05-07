@@ -10,7 +10,7 @@ Using DC Open Data crime incidents (2008–2025) enriched with spatial features 
 
 2) which felony category a crime falls under (multi-classification); 
 
-3) what felony/crime rate of a tract in DC will be next year (regression model). 
+3) what felony severity score of a crime new reported in DC would be (regression task). 
 
 We train and test on 2019–2022 data, implement on 2023, and the final merged dataset (crime_enriched_acs_nona.csv) is available via qmd file. 
 
@@ -194,6 +194,13 @@ eg. I need to use `git branch -d troy` to delete the branch I created.
 
 ### DC Tract Boundaries
 - [DC Census Tract Shapefiles (TIGER/Line 2023) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2023/TRACT/)
+- [DC Census Tract Shapefiles (TIGER/Line 2020) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2020/TRACT/)
+- [DC Census Tract Shapefiles (TIGER/Line 2019) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2019/TRACT/)
+- [DC Census Tract Shapefiles (TIGER/Line 2018) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2018/TRACT/)
+- [DC Census Tract Shapefiles (TIGER/Line 2017) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2017/TRACT/)
+- [DC Census Tract Shapefiles (TIGER/Line 2016) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2016/TRACT/)
+- [DC Census Tract Shapefiles (TIGER/Line 2015) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2015/TRACT/)
+- [DC Census Tract Shapefiles (TIGER/Line 2010) - U.S. Census](https://www2.census.gov/geo/tiger/TIGER2010/TRACT/2010/)
 
 
 ## Comments
