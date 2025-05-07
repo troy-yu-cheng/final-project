@@ -598,7 +598,7 @@ final_log_fit <- fit(final_log_wf, data = crime_train)
 
 ### Interpret the results
 
-#### Vraible Importance
+#### Variable Importance
 
 First, let's take a look at the variable importance.
 
@@ -610,9 +610,9 @@ log_model <- extract_fit_parsnip(final_log_fit)
 vip(log_model, num_features = 20)
 ```
 
-The plot shows that `offense method` and `police shift` are the most important predictors. Features like `method_OTHERS`, `method_KNIFE` and `shift_MIDNIGHT`, `shift_EVENING` strongly contribute to felony predictions. Most temporal and demographic variables like `report_date_parsed_dow_Wed`, `black_pct`, `foreign_born_pct` have much lower influence. This shows that situational factors of how the crime happened and when it happened carry more predictive weight than background demographic characteristics in this model.
+The plot shows that `offense method` and `police shift` are the most important predictors. Features like `method_OTHERS`, `method_KNIFE` and `shift_MIDNIGHT`, `shift_EVENING` strongly contribute to felony predictions. Most temporal and demographic variables like `report_date_parsed_dow_Wed`, `black_pct`, `hsplus_pct`, `foreign_born_pct` have much lower influence. This shows that situational factors of how the crime happened and when it happened carry more predictive weight than background demographic characteristics in this model.
 
-Next, let's assess our tuned logistic regression model using both the test set (from 2019–2022) and the implementation set (from 2023). We focus on the model's ability to identify felony incidents, particularly minimizing false negatives.
+Next, let's assess our tuned logistic regression model using both the test set (from 2020–2022) and the implementation set (from 2023). We focus on the model's ability to identify felony incidents, particularly minimizing false negatives.
 
 #### In-sample Performance on Test Set
 
@@ -952,6 +952,8 @@ ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
 # read in the data
 crime <- read_csv("data/crime_enriched_acs_nona2.csv")
 ```
+
+**Note: the dataset crime_enriched_acs_nona2.csv is the same as dataset crime_enriched_acs_nona.csv. As we worked separately, we named our variables differently.**
 
 In addition to knowing whether a crime is a felony, it is also useful for law enforcement to know the severity of the felony, since several different crime categories are classified as felonies and each require different resources and police response.
 
@@ -1501,7 +1503,6 @@ knn_newrecipe <- recipe(formula = felony_severity ~ ., data = multiclass_train) 
   step_normalize(all_numeric_predictors()) |>
   step_dummy(all_nominal_predictors()) 
   
-
 # model
 knn_model <- nearest_neighbor(neighbors = 5) |>
   set_engine(engine = "kknn") |>
@@ -1691,17 +1692,6 @@ The final model is quite limited in its practical usefulness because of its rela
 Overall, it is difficult to predict the severity of a felony due to the variety of features related to crime, including geographic factors, demographic variables, and temporal factors. Additional features that may improve model performance include past rates of crimes of different felony severity levels, since the overall distribution of felony severity follows a similar trend in the District across years.
 
 
-
-
-
-
-
-
-
-
-
-
-
 # Regression Task
 
 ## Split Data
@@ -1871,7 +1861,7 @@ We use 5-fold cross-validation and tune model hyperparameters for all three regr
 #| label: reg-cv-setup
 # Set up 5-fold cross-validation
 set.seed(123)
-crime_folds_reg <- vfold_cv(crime_train, v = 5)
+crime_folds_reg <- vfold_cv(crime_train_reg, v = 5)
 
 # Define metrics for regression
 reg_metrics <- metric_set(rmse, rsq)
@@ -1891,7 +1881,7 @@ lm_res <- fit_resamples(
 )
 
 # Fit final model on full training set
-lm_fit <- fit(lm_wf, data = crime_train)
+lm_fit <- fit(lm_wf, data = crime_train_reg)
 
 ```
 
@@ -1925,7 +1915,7 @@ best_rf_reg <- select_best(rf_res_reg, metric = "rmse")
 final_rf_wf_reg <- finalize_workflow(rf_wf_reg, best_rf_reg)
 
 set.seed(123)
-final_rf_fit_reg <- fit(final_rf_wf_reg, data = crime_train)
+final_rf_fit_reg <- fit(final_rf_wf_reg, data = crime_train_reg)
 
 ```
 
@@ -1957,10 +1947,10 @@ xgb_res_reg <- tune_grid(
 best_xgb_reg <- select_best(xgb_res_reg, metric = "rmse")
 
 # Finalize and fit model
-final_xgb_wf_reg <- finalize_workflow(xgb_wf_reg, best_xgb)
+final_xgb_wf_reg <- finalize_workflow(xgb_wf_reg, best_xgb_reg)
 
 set.seed(123)
-final_xgb_fit_reg <- fit(final_xgb_wf, data = crime_train)
+final_xgb_fit_reg <- fit(final_xgb_wf_reg, data = crime_train_reg)
 ```
 
 ## Interpretation
@@ -1998,12 +1988,12 @@ vip(rf_model_reg, num_features = 20)
 
 ```{r}
 # XGBoost importance
-xgb_model_reg <- extract_fit_parsnip(final_xgb_fit)
+xgb_model_reg <- extract_fit_parsnip(final_xgb_fit_reg)
 vip(xgb_model_reg, num_features = 20)
 
 ```
 
-Though the importance values are more concentrated. The `method_OTHERS`, `shift_MIDNIGHT` and `black_pct` dominate, while demographic variables such as `foreign_born_pct`, `poverty_rate` and `age65plus_pct` have smaller but non-zero contributions.
+Though the importance values are more concentrated. The `method_OTHERS`, `shift_MIDNIGHT` and `black_pct` dominate, while demographic variables such as `under18_pct`, `foreign_born_pct` and `unemployed_rate` have smaller but non-zero contributions.
 
 ### Interpreting Model Predictions
 
@@ -2015,29 +2005,29 @@ To make the predictions directly interpretable, we apply an **inverse Yeo-Johnso
 
 ```{r}
 # Linear Regression - Test
-lm_test_pred <- predict(lm_fit, new_data = crime_test) |> 
+lm_test_pred <- predict(lm_fit, new_data = crime_test_reg) |> 
   mutate(.pred = predict(yj_obj, newdata = .pred, inverse = TRUE)) |>  # inverse transformation
-  bind_cols(crime_test |> select(felony_severity))
+  bind_cols(crime_test_reg |> select(felony_severity))
 
 metrics(lm_test_pred, truth = felony_severity, estimate = .pred)
 
 # Random Forest - Test
-rf_test_pred <- predict(final_rf_fit_reg, new_data = crime_test) |> 
+rf_test_pred <- predict(final_rf_fit_reg, new_data = crime_test_reg) |> 
   mutate(.pred = predict(yj_obj, newdata = .pred, inverse = TRUE)) |>
-  bind_cols(crime_test |> select(felony_severity))
+  bind_cols(crime_test_reg |> select(felony_severity))
 
 metrics(rf_test_pred, truth = felony_severity, estimate = .pred)
 
 # XGBoost - Test
-xgb_test_pred <- predict(final_xgb_fit, new_data = crime_test) |> 
+xgb_test_pred <- predict(final_xgb_fit_reg, new_data = crime_test_reg) |> 
   mutate(.pred = predict(yj_obj, newdata = .pred, inverse = TRUE)) |>
-  bind_cols(crime_test |> select(felony_severity))
+  bind_cols(crime_test_reg |> select(felony_severity))
 
 metrics(xgb_test_pred, truth = felony_severity, estimate = .pred)
 
 ```
 
-After evaluating model performance on the held-out test set using RMSE, R-squared, and MAE after applying inverse transformation. Linear regression showed weak performance, with an RMSE of 1.83 and R² of 0.15, capturing little variance. Random forest performed best, with an RMSE of 1.50 and R² of 0.52. XGBoost had similar RMSE to linear regression but slightly better R² at 0.24.
+After evaluating model performance on the held-out test set using RMSE, R-squared, and MAE after applying inverse transformation. Linear regression showed weak performance, with an RMSE of 1.71 and R² of 0.18, capturing little variance. Random forest performed best, with an RMSE of 1.48 and R² of 0.53. XGBoost had RMSE of 1.89 and slightly better R² at 0.24 than linear regression.
 
 #### Evaluate on Implementation Set
 
@@ -2057,7 +2047,7 @@ rf_impl_pred <- predict(final_rf_fit_reg, new_data = crime_enriched_implement) |
 metrics(rf_impl_pred, truth = felony_severity, estimate = .pred)
 
 # XGBoost - Implementation
-xgb_impl_pred <- predict(final_xgb_fit, new_data = crime_enriched_implement) |> 
+xgb_impl_pred <- predict(final_xgb_fit_reg, new_data = crime_enriched_implement) |> 
   mutate(.pred = predict(yj_obj_impl, newdata = .pred, inverse = TRUE)) |>
   bind_cols(crime_enriched_implement |> select(felony_severity))
 
@@ -2066,7 +2056,7 @@ metrics(xgb_impl_pred, truth = felony_severity, estimate = .pred)
 
 ```
 
-On the 2023 implementation data, linear regression and XGBoost failed to generalize, with RMSEs of 7.06 and 6.62, and R² values near zero. In contrast, random forest maintained strong performance with an RMSE of 1.34 and R² of 0.53.
+On the 2023 implementation data, linear regression and XGBoost failed to generalize, with RMSEs of 8.14 and 12.32, and R² values near zero. In contrast, random forest maintained strong performance with an RMSE of 1.32 and R² of 0.53.
 
 ### Collect all metrics into one table
 
@@ -2085,6 +2075,9 @@ all_metrics_reg <- bind_rows(
 ### Visualize 3 Models' Performances
 
 ```{r}
+all_metrics_reg <- all_metrics_reg |>
+  mutate(set = factor(set, levels = c("Test", "Implementation")))
+
 # Plot RMSE Comparison
 all_metrics_reg |>
   filter(.metric == "rmse") |>
@@ -2172,7 +2165,7 @@ crime_incidents <- crime_incidents |>
 
 Here we assign a `felony_severity` score to each major offense type, using the [Cambridge Crime Harm Index (CHI)](https://doi.org/10.1093/police/paw003) and [per-case cost data](https://pmc.ncbi.nlm.nih.gov/articles/PMC2835847/) as reference. CHI sentence days reflect the relative harm severity as determined by sentencing guidelines. While monetary cost gives an economic impact perspective, the severity ranking primarily follows the CHI framework.
 
-| Felony Offense | `felony_severity` Score | CHI Sentence Days (per case) | Total Cost per Case (USD, 2008) |
+| Felony Offense | felony_severity Score | CHI Sentence Days (per case) | Total Cost per Case (USD, 2008) |
 |------------------|------------------|------------------|-------------------|
 | HOMICIDE | 7 | 5,475 | \$8,982,907 |
 | SEX ABUSE (Rape/Sexual Assault) | 6 | 1,825 / 365 | \$240,776 |
