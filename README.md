@@ -81,7 +81,6 @@ eg. After add and commit, I push changes to branch `troy` using `git push origin
   - GitHub will show a message saying "This branch has conflicts that must be resolved."
   - Click "Resolve conflicts" on the GitHub page.
   - You will see the files with conflicts. GitHub will show the conflicting parts like this:
-
     ```text
     <<<<<<< main
     (the code from the main branch)
@@ -89,7 +88,6 @@ eg. After add and commit, I push changes to branch `troy` using `git push origin
     (the code from your branch)
     >>>>>>> your-branch-name
     ```
-
   - Choose which code you want to keep. You can keep the version from `main`, your version, or a mix of both.
   - Delete the `<<<<<<<`, `=======`, and `>>>>>>>` conflict markers after you fix the code.
   - After fixing, click "Mark as resolved" on GitHub.
