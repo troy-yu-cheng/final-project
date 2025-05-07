@@ -2,7 +2,7 @@
 title: "Data Science for Public Policy"
 subtitle: "Final Project"
 author: 
-  - name: "Troy Cheng, Ziqiao Shan, Minji Kang & Sarah Krause"
+  - name: "Troy Cheng, Ziqiao Shan, Minji Kang, Sarah Krause"
     email: yc1317@georgetown.edu
     affiliation: Georgetown University
     corresponding: true
@@ -31,6 +31,8 @@ highlight-style: nord
 engine: knitr
 ---
 
+# Literature Review
+
 # Set up
 
 ```{r}
@@ -49,11 +51,18 @@ library(vip)
 library(ranger)
 library(xgboost)
 library(rlang)
+library(bestNormalize)
 ```
 
 ## Prepare Data Set
 
-In this stretch exercise, we use a government and policy-relevant dataset to develop a practical binary classification model predicting whether a reported crime incident in Washington, D.C. is a felony.
+In this project, we use a government and policy-relevant dataset to develop a three different types of models to predict:
+
+1.  the likelihood of a crime being a felony in Washington, D.C. (binary classification task);
+
+2.  which felony category a new reported crime in DC falls under (multi-classification task);
+
+3.  what felony severity score of a crime new reported in DC would be (regression task).
 
 The data is compiled primarily from the [DC Open Data Portal](https://opendata.dc.gov/). The main source is a series of datasets titled *Crime Incidents*, released annually from 2008 to 2025, comprising a total of eighteen datasets. These include metadata for each crime incident, such as the exact date and time of occurrence, geographic coordinates (latitude and longitude), offense classification (e.g., theft, robbery), police shift (e.g., evening, midnight).
 
@@ -71,11 +80,11 @@ To enrich the crime records with contextual and spatial information, we merged s
 
 We also integrated tract-level socioeconomic indicators from the American Community Survey (ACS5) using the `tidycensus` package. These variables include poverty rate, income, renter percentage, race/ethnicity composition, vehicle ownership, and age structure etc. Notably, since ACS5 provides rolling estimates across five-year spans, we aligned each crime observation with the most recent ACS data available for that year. For example, the 2005–2009 ACS estimates are used to represent conditions in 2009. While not a perfect snapshot, this method can act as a consistent way to approximate local context year by year.
 
-The final merged dataset (`crime_enriched_acs_nona.csv`) is available via this [shared link](https://drive.google.com/file/d/1xSicNSVM_-Xzb-CoXYXpTYt98r9PON7n/view?usp=drive_link).
+The final merged dataset (`crime_enriched_acs_nona.csv`) is available via this [shared link](https://drive.google.com/file/d/1sbGz9sY37c_5gGZh8LnMcokTRxfgET79/view?usp=drive_link).
 
 The outcome variable, `felony_flag`, is derived from the reported offense type, indicating whether a reported crime is classified as a felony. This classification task is critical, as felonies typically represent more serious crimes and require distinct responses in terms of police allocation. Our goal is to build a predictive model that helps law enforcement deploy patrol resources more efficiently by forecasting felony likelihood using supervised machine learning techniques.
 
-To ensure real-world model evaluation, we split the dataset by time: observations from 2019 to 2022 are used for training, while 2023 data is reserved for implementation testing. The detailed data processing and cleaning steps are documented in the Appendix section. The raw data sources are listed in the README.
+To ensure real-world model evaluation, we split the dataset by time: observations from 2020 to 2022 are used for training, while 2023 data is reserved for implementation testing. The detailed data processing and cleaning steps are documented in the **Appendix** section. The raw data sources are listed in the [**README**](https://github.com/troy-yu-cheng/final-project?tab=readme-ov-file#data-sources).
 
 ```{r}
 #| label: Load data
@@ -85,7 +94,7 @@ crime_enriched_no_na <- read_csv("data/crime_enriched_acs_nona.csv")
 
 # Select variables of interest for modeling
 keep_vars <- c(
-  "felony_flag", # outcome variable
+  "felony_flag", "felony_severity", # outcome variables
   "x", "y", "latitude", "longitude", "year",
   "shift", "method", "tract", "report_date_parsed",
 
@@ -101,22 +110,19 @@ keep_vars <- c(
   "in_military_base",
 
   # ACS socioeconomic features
-  "median_income", "poverty_rate", "unemployed_rate", 
-  "singlemom_pct",
-  "renter_pct", "no_vehicle_pct", 
+  "poverty_rate", "unemployed_rate", 
   "black_pct", "hispanic_pct","foreign_born_pct", 
   "hsplus_pct", 
   "under18_pct", "age65plus_pct"
 )
 
-
 # Keep only selected variables
 crime_enriched_small <- crime_enriched_no_na |> 
   select(all_of(keep_vars))
 
-# Define training data (2019-2022)
+# Define training data (2020-2022)
 crime_enriched_mod <- crime_enriched_small |>
-  filter(year >= 2019, year < 2023)
+  filter(year >= 2020, year < 2023)
 
 # Define implementation/test data (2023)
 crime_enriched_implement <- crime_enriched_small |>
@@ -136,6 +142,18 @@ crime_enriched_implement <- crime_enriched_implement |>
          felony_flag = factor(felony_flag)
          )
 
+# Apply Yeo-Johnson transformation to the felony_severity column
+yj_obj <- yeojohnson(crime_enriched_mod$felony_severity)
+
+# Add transformed column to the training dataset
+crime_enriched_mod$felony_severity_trans <- predict(yj_obj)
+
+# Apply Yeo-Johnson transformation to the felony_severity column
+yj_obj_impl <- yeojohnson(crime_enriched_implement$felony_severity)
+
+# Add transformed column to the implement dataset
+crime_enriched_implement$felony_severity_trans <- predict(yj_obj_impl)
+
 ```
 
 ## Split Data
@@ -151,11 +169,11 @@ crime_train <- training(crime_split)
 crime_test <- testing(crime_split)
 ```
 
-*Note: This train-test split is performed only on data from 2019 to 2022. The year 2023 is held out separately for final implementation testing, simulating real-world deployment.*
+*Note: This train-test split is performed only on data from 2020 to 2022. The year 2023 is held out separately for final implementation testing, simulating real-world deployment.*
 
 ## EDA on Training Set
 
-First, let's examine the distribution of the outcome variable `felony_flag`.
+First, let's examine the distribution of the outcome variable `felony_flag` for binary classification task.
 
 ```{r}
 #| label: EDA
@@ -165,7 +183,43 @@ crime_train |>
   mutate(pct = n / sum(n))
 ```
 
-According to the table, about 30% of crimes in the training set are felonies, while 70% are non-felonies. This class imbalance could affect how the model learns. We'll apply a downsampling method to help the model treat both classes fairly during training.
+According to the table, about 30% of crimes in the training set are felonies, while about 70% are non-felonies. This class imbalance could affect how the model learns. We'll apply a downsampling method to help the model treat both classes fairly during training.
+
+Also, we investigate the distribution of `felony_severity`, which is used in both the multi-class classification and regression tasks.
+
+```{r}
+#| label: EDA_severity
+# Explore felony severity distribution
+crime_train |>
+  count(felony_severity) |>
+  mutate(pct = n / sum(n)) |>
+  arrange(desc(felony_severity))
+
+```
+
+Based on the table above, crimes were categorized into an ordinal scale from 0 to 7, with 0 representing non-felonies and 7 representing the most severe felony `homicide`.
+
+The distribution of felony_severity in the training set is highly skewed. About 69% of the observations fall under severity 0, meaning they are not classified as felonies under our scheme. The most frequent felony types are lower-level ones such as `motor vehicle theft`(severity = 1) and `burglary` (severity = 2). Mid-range felonies like `robbery` (severity = 4) and `aggravated assault` (severity = 5) occur less often, while severe crimes like `sexual abuse` (severity = 6) and `homicide` (severity = 7) are extremely rare, with only a few hundred instances in total. The category with severity 3 `arson` is the rarest, appearing only 17 times.
+
+To visualize this distribution, we plot the number of cases per severity score:
+
+```{r}
+crime_train |>
+  ggplot(aes(x = factor(felony_severity))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Felony Severity Scores",
+       x = "Felony Severity Score",
+       y = "Count")+
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    text = element_text(family = "serif") 
+  )
+
+
+```
+
+This long-tailed distribution shows that serious crimes like `arson` are rare in the data, which can make it harder for models to learn from them. For classification tasks, we can fix this by reducing the number of common cases (downsampling), adding more rare cases (using SMOTE), or telling the model to pay more attention to rare classes (weighted loss). For regression task, we can try using methods that handle outliers better (like robust regression), or change the target variable (like using log or bins) to make it easier for the model to learn.
 
 Second, we explore whether felony crimes are more likely on specific days of the week by plotting the proportion of crimes that are felonies for each weekday.
 
@@ -193,7 +247,7 @@ crime_train |>
 
 The plot shows felonies are slightly more frequent on weekends compared to weekdays.
 
-Third, we assess whether ACS5 predictors we selected relate meaningfully to outcome variable `felony_flag`. Here we focus on `poverty_rate`.
+Third, we assess whether ACS5 predictors we selected relate meaningfully to one of our outcome variables `felony_flag`. Here we focus on `poverty_rate`.
 
 ```{r}
 #| label: poverty-logit-smooth
@@ -222,6 +276,7 @@ Furthermore, we calculate average felony rates by census tract and display them 
 
 dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
 ```
+
 ```{r}
 tract_felrate <- crime_train |>
   group_by(tract) |>
@@ -244,20 +299,11 @@ ggplot(tract_sf_joined) +
   theme(
     text = element_text(family ="serif")
   )
+
+unique(crime_enriched_no_na$tract)
 ```
 
 As shown in the map, felony rates are unevenly distributed across D.C. The southern and eastern tracts report substantially higher proportions of felony incidents, while felony rates are lower in northern areas.
-
-Also, we found some tracts appear as missing (shaded grey), indicating that no valid felony rate was computed. To confirm which tracts were dropped, we checked for unmatched tract codes between the shapefile and our dataset:
-
-```{r}
-# Check for missing tracts
-setdiff(dc_tract_sf$TRACTCE, crime_train$tract)
-
-setdiff(dc_tract_sf$TRACTCE, crime_enriched_mod$tract)
-```
-
-The same three tracts `980000`, `009511`, and `000201` are absent from both `crime_train` and `crime_enriched_mod`. This likely stems from aggressive NA removal strategy during the merge of DC Open Data and ACS data. For now, we flag these tracts as missing. In our final project, we plan to revisit this step and apply more robust data imputation methods.
 
 Lastly, we plot each crime by its location to spot patterns across the city. Because there are too many points for a static map, we use an interactive one. Red dots are felonies. Blue dots are non-felonies.
 
@@ -301,9 +347,11 @@ plot_ly(
 
 ```
 
+# Binary Classification
+
 ## Select Error Metric
 
-In this classification task, the outcome variable is `felony_flag`, indicating whether a reported crime is classified as a felony. We aim to build a predictive model that helps law enforcement allocate patrol resources more efficiently by identifying potential felony incidents in advance.
+In this binary classification task, the outcome variable is `felony_flag`, indicating whether a reported crime is classified as a felony. We aim to build a predictive model that helps law enforcement allocate patrol resources more efficiently by identifying potential felony incidents in advance.
 
 For this binary classification problem, we propose to use `1 − Recall` as our main evaluation metric, which intuitively represents the share of felonies the model fails to detect:
 
@@ -317,17 +365,15 @@ Although metrics like accuracy and `ROC AUC` provide an overall picture, they ma
 
 In this context, a `false negative` (missed felonies) is more costly than a `false positive` (flagging non-felonies). A false positive might result in unnecessary police allocation, which is manageable. While a false negative may mean failing to prevent or respond to a serious crime, posing higher social and safety costs.
 
-# Binary Classification
-
 ## Come up with Models
 
-Three model specifications are as below. Each model uses different combinations of feature sets, pre-processing (recipe) and algorithms, so that we can compare their effectiveness and usefulness in the forth part.
+We test three model specifications as below. Each model uses different combinations of feature sets, pre-processing (recipe) and algorithms, so that we can compare their effectiveness and usefulness in the evaluation part.
 
 ### Model 1: Logistic Regression with LASSO
 
 This model uses logistic regression with L1 regularization to predict felony likelihood, prioritizing interpretability and simplicity. It focuses on demographic and temporal predictors that reflect structural and situational risk. The L1 penalty helps reduce noise by shrinking less relevant variables toward zero.
 
-We include seven ACS-derived variables: `poverty rate`, `renter share`, `Black and Hispanic population percentages`, `foreign-born share`, and the proportions of residents under 18 and over 65. We also include two crime-level factors: `police shift` and `method of offense`.
+We include seven ACS-derived variables: `poverty rate`, `Black and Hispanic population percentages`, `foreign-born share`, and the proportions of residents under 18 and over 65. We also include two crime-level factors: `police shift` and `method of offense`.
 
 Preprocessing steps include:
 
@@ -345,8 +391,9 @@ The specific recipe is as below:
 
 ```{r}
 #| label: crime_rec_log
-crime_rec_log <- recipe(felony_flag ~ poverty_rate + renter_pct + 
+crime_rec_log <- recipe(felony_flag ~ poverty_rate + unemployed_rate +
                           black_pct + hispanic_pct + foreign_born_pct + 
+                          hsplus_pct +
                           under18_pct + age65plus_pct +
                           shift + method + report_date_parsed,
                         data = crime_train) |>
@@ -373,7 +420,8 @@ log_spec <- logistic_reg(
   penalty = tune(), # L1 penalty strength (lambda)
   mixture = 1 # 1 means LASSO (L1 only)
 ) |> 
-  set_engine("glmnet")
+  set_engine("glmnet") |>
+  set_mode("classification") 
 
 log_wf <- workflow() |> 
   add_model(log_spec) |> 
@@ -438,11 +486,11 @@ rf_wf <- workflow() |>
 
 This model maximizes predictive power by incorporating the full set of spatial, socioeconomic, and temporal predictors available in the dataset. Unlike Models 1 and 2, which focus on interpretability or spatial patterns, this model includes feature broadly and lets the boosting algorithm handle interactions and variable selection.
 
-The predictors include: 
+The predictors include:
 
 1.  Spatial and Proximity Features: `in_liquor_moratorium_zone`, `nearest_liquorstore_dist`, `near_liquorstore_200m`, `near_wifi_100m`, `nearest_wifi_dist`, `in_lowfood_zone`, `nearest_grocery_dist`, `near_grocery_300m`, `nearest_bank_dist`, `near_bank_250m`, `in_vending_zone`, `police_sector`, `in_military_base`.
 
-2.  Demographic and Socioeconomic Features from ACS: `median_income`, `poverty_rate`, `unemployed_rate`, `singlemom_pct`, `renter_pct`, `no_vehicle_pct`, `black_pct`, `hispanic_pct`, `foreign_born_pct`, `hsplus_pct`, `under18_pct`, `age65plus_pct`.
+2.  Demographic and Socioeconomic Features from ACS: `poverty_rate`, `unemployed_rate`, `black_pct`, `hispanic_pct`, `foreign_born_pct`, `hsplus_pct`, `under18_pct`, `age65plus_pct`.
 
 3.  Time and Categorical Contextual Features: `shift`, `method`, `tract`, `report_date_parsed`.
 
@@ -455,6 +503,7 @@ The specific recipe is as below:
 ```{r}
 #| label: crime_rec_xgb
 crime_rec_xgb <- recipe(felony_flag ~ ., data = crime_train) |>
+  step_rm(felony_severity) |>
   step_downsample(felony_flag) |>
   step_date(report_date_parsed, features = "dow", label = TRUE) |>
   step_mutate(
@@ -483,7 +532,8 @@ xgb_spec <- boost_tree(
   learn_rate = tune(), # learning rate (to be tuned)
   loss_reduction = tune() # min loss reduction to split further (to be tuned)
 ) |>
-  set_engine("xgboost")
+  set_engine("xgboost") |>
+  set_mode("classification") 
 
 xgb_wf <- workflow() |>
   add_model(xgb_spec) |>
@@ -548,7 +598,7 @@ log_model <- extract_fit_parsnip(final_log_fit)
 vip(log_model, num_features = 20)
 ```
 
-The plot shows that `offense method` and `police shift` are the most important predictors. Features like `method_OTHERS`, `method_KNIFE` and `shift_MIDNIGHT` strongly contribute to felony predictions. Most temporal and demographic variables like `black_pct`, `foreign_born_pct` have much lower influence. This shows that situational factors of how the crime happened and when it happened carry more predictive weight than background demographic characteristics in this model.
+The plot shows that `offense method` and `police shift` are the most important predictors. Features like `method_OTHERS`, `method_KNIFE` and `shift_MIDNIGHT`, `shift_EVENING` strongly contribute to felony predictions. Most temporal and demographic variables like `report_date_parsed_dow_Wed`, `black_pct`, `foreign_born_pct` have much lower influence. This shows that situational factors of how the crime happened and when it happened carry more predictive weight than background demographic characteristics in this model.
 
 Next, let's assess our tuned logistic regression model using both the test set (from 2019–2022) and the implementation set (from 2023). We focus on the model's ability to identify felony incidents, particularly minimizing false negatives.
 
@@ -577,7 +627,7 @@ recall_val
 one_minus_recall_val
 ```
 
-The model achieves an `accuracy` of 78.4% and a `1 − Recall` of only 0.0021 on the test set. This means fewer than 0.3% of true felonies are misclassified as non-felonies. This is crucial in a public safety context where failing to detect a felony could result in inadequate response.
+The model achieves an `accuracy` of 78.4% and a `1 − Recall` of only 0.0015 on the test set. This means fewer than 0.2% of true felonies are misclassified as non-felonies. This is crucial in a public safety context where failing to detect a felony could result in inadequate response.
 
 #### Out-of-sample Generalization to 2023 Implementation Set
 
@@ -604,7 +654,7 @@ recall_val_impl
 one_minus_recall_val_impl
 ```
 
-On the implementation set, the model maintains a recall of 99.6% and an accuracy of 72.8%, with a `1 − Recall` of 0.0039. This confirms the model generalizes well and continues to flag nearly all felony cases, even in new data.
+On the implementation set, the model maintains a recall of 99.6% and an accuracy of 72.4%, with a `1 − Recall` of 0.0043. This confirms the model generalizes well and continues to flag nearly all felony cases, even in new data.
 
 In conclusion, the model is effective because it captures the majority of serious crimes with very low false negatives. In policing strategy, this is far more important than overall accuracy. The model's simplicity and high recall make it practical for daily patrol planning and hotspot targeting.
 
@@ -882,20 +932,358 @@ ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
 
 ```
 
+# Regression Task
 
-# Regression Model
+## Explanation on Outcome Variable
 
-## Add felony_rate Column at Tract Level
+In this regression task, the outcome variable is `felony_severity_trans`, which is a transformed version of the original felony_severity score using the **Yeo-Johnson transformation**. The original score ranged from 0 to 7, reflecting the seriousness of the felony based on sentence length and social cost. For example, `homicide` is scored as 7, while `motor vehicle theft` is scored as 1. Although this score is technically ordinal (ranked categories), we treat it as approximately continuous for modeling purposes. This is a common approach in applied research when the levels are evenly spaced and reflect meaningful differences ([Robitzsch, 2020](https://doi.org/10.3389/feduc.2020.589965)). For instance, the gap between scores of 1 and 2 can be interpreted similarly to the gap between 5 and 6. This treatment allows us to conduct standard regression models.
+
+However, the distribution of `felony_severity` is skewed due to the rarity of severe crimes like `arson` and `homicide`, which can distort model performance. To address this, we applied the **Yeo-Johnson transformation** to the outcome variable. This transformation preserves the relative severity ranking, but reduces skewness and pulls in extreme values, improving model performance by better meeting assumptions of normality and homoscedasticity.
+
+After transformation, the values are no longer on the original 0–7 scale. For example, the eight unique severity levels were transformed to:
 
 ```{r}
-crime_enriched_mod
+unique(crime_train$felony_severity_trans)
+```
+
+These numbers are not directly interpretable in real-world terms, but they retain the ordering of crime severity and provide a statistically stable basis for modeling.
+
+In practice, we use `felony_severity_trans` as the outcome variable during model training and prediction, and then apply the **inverse Yeo-Johnson transformation** (via `predict(yj_obj, inverse = TRUE)`) to convert predicted values back to the original 0–7 severity scale. This allows for more intuitive interpretation of the results while preserving the modeling benefits of the transformation.
+
+## Select Error Metric
+
+Our goal is to predict how severe a crime might be if it is a felony. This helps the police understand which crimes are more dangerous and need more attention.
+
+Since some severe crimes are rare, we want to make sure the model does not make big mistakes when predicting them. So we use `RMSE` and `R-squared` as our main evaluation metrics. RMSE tells us how far the predictions are from the true values, especially for big mistakes. R-squared shows how much variation in severity scores our model can explain.
+
+## Come up with Models
+
+For this regression task, we still build three candidate models to test which performs best.
+
+### Model 1: Linear Regression with Yeo-Johnson Transformation
+
+This baseline model uses linear regression to predict felony severity. It focuses on socioeconomic context and crime-level temporal features. While linear models may not capture complex interactions, they offer a strong baseline for comparison and clear insights into variable importance. We use the pre-transformed outcome `felony_severity_trans` to reduce skewness and stabilize variance.
+
+```{r}
+#| label: crime_rec_lm
+crime_rec_lm <- recipe(felony_severity_trans ~ poverty_rate + unemployed_rate + 
+                         black_pct + hispanic_pct + foreign_born_pct +
+                         hsplus_pct +
+                         under18_pct + age65plus_pct +
+                         shift + method + report_date_parsed,
+                       data = crime_train) |>
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(report_date_parsed) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors())
+```
+
+The model specification and workflow are defined as follows:
+
+```{r}
+#| label: model1-lm-spec-wf
+lm_spec <- linear_reg() |> 
+  set_engine("lm") |>
+  set_mode("regression") 
+  
+lm_wf <- workflow() |> 
+  add_model(lm_spec) |> 
+  add_recipe(crime_rec_lm)
+```
+
+### Model 2: Random Forest Regression with Spatial Features
+
+This model uses Random Forest to predict `felony_severity_trans`, a transformed version of `felony severity`, based on spatial and environmental context. It includes features such as tract, proximity to liquor stores, grocery stores, banks, and public infrastructure, as well as police sector and zoning indicators. Socioeconomic variables are excluded to focus on location-based risk factors.
+
+```{r}
+#| label: crime_rec_rf_reg
+crime_rec_rf_reg <- recipe(felony_severity_trans ~ tract + shift + method + 
+                             report_date_parsed +
+                             in_liquor_moratorium_zone + 
+                             nearest_liquorstore_dist + near_liquorstore_200m +
+                             near_wifi_100m + nearest_wifi_dist +
+                             in_lowfood_zone + 
+                             nearest_grocery_dist + near_grocery_300m +
+                             nearest_bank_dist + near_bank_250m +
+                             in_vending_zone + police_sector + in_military_base,
+                           data = crime_train) |>
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(report_date_parsed) |>
+  step_corr(all_numeric_predictors(), threshold = 0.9) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors())
 
 ```
 
+The model specification and workflow are defined as follows:
+
+```{r}
+#| label: model2-reg-spec-wf
+rf_spec_reg <- rand_forest(
+  mtry = tune(),
+  trees = 50,
+  min_n = tune()
+) |>
+  set_engine("ranger", importance = "impurity") |>
+  set_mode("regression")
+
+rf_wf_reg <- workflow() |>
+  add_model(rf_spec_reg) |>
+  add_recipe(crime_rec_rf_reg)
+```
+
+### Model 3: XGBoost Regression with All Features
+
+This model leverages all available features to predict `felony_severity_trans`, a transformed version of felony severity. It includes demographic, spatial, temporal, and contextual predictors. We again apply a Yeo-Johnson transformation to the outcome and clean predictors using normalization, correlation filtering, and dummy encoding.
+
+```{r}
+#| label: crime_rec_xgb_reg
+crime_rec_xgb_reg <- recipe(felony_severity ~ ., data = crime_train) |>
+  step_rm(felony_flag) |>
+  step_YeoJohnson(all_outcomes()) |>  # transform skewed outcome
+  step_date(report_date_parsed, features = "dow", label = TRUE) |>
+  step_mutate(
+    yday = lubridate::yday(report_date_parsed),
+    yday_cos = cos(2 * pi * yday / 365),
+    yday_sin = sin(2 * pi * yday / 365)
+  ) |>
+  step_rm(x, y, latitude, longitude, year, report_date_parsed) |>
+  step_nzv(all_predictors()) |>
+  step_corr(all_numeric_predictors(), threshold = 0.9) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors())
+```
+
+The model specification and workflow are defined as follows:
+
+```{r}
+#| label: model3-reg-spec-wf
+xgb_spec_reg <- boost_tree(
+  trees = 50,
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune()
+) |>
+  set_engine("xgboost") |>
+  set_mode("regression")
+
+xgb_wf_reg <- workflow() |>
+  add_model(xgb_spec_reg) |>
+  add_recipe(crime_rec_xgb_reg)
+```
+
+## Estimation
+
+We use 5-fold cross-validation and tune model hyperparameters for all three regression models. Our evaluation metrics are `RMSE` and `R-squared`, which reflect prediction accuracy and explained variance, respectively.
+
+```{r}
+#| label: reg-cv-setup
+# Set up 5-fold cross-validation
+set.seed(123)
+crime_folds_reg <- vfold_cv(crime_train, v = 5)
+
+# Define metrics for regression
+reg_metrics <- metric_set(rmse, rsq)
+
+```
+
+### Model 1: Linear Regression (no tuning needed)
+
+```{r}
+#| label: model1-lm-estimate
+# Evaluate model via 5-fold CV
+lm_res <- fit_resamples(
+  lm_wf,
+  resamples = crime_folds_reg,
+  metrics = reg_metrics,
+  control = control_resamples(save_pred = TRUE)
+)
+
+# Fit final model on full training set
+lm_fit <- fit(lm_wf, data = crime_train)
+
+```
+
+### Model 2: Random Forest
+
+```{r}
+#| label: model2-rf-reg-est
+# Define tuning grid for random forest
+set.seed(123)
+rf_grid_reg <- grid_random(
+  mtry(range = c(3, 12)),
+  min_n(range = c(2, 10)),
+  size = 5
+)
+
+# Tune model
+rf_res_reg <- tune_grid(
+  rf_wf_reg,
+  resamples = crime_folds,
+  grid = rf_grid_reg,
+  metrics = reg_metrics,
+  control = control_grid(save_pred = TRUE),
+  verbose = TRUE
+)
+
+# Select best model based on RMSE
+best_rf_reg <- select_best(rf_res_reg, metric = "rmse")
+
+# Finalize and fit
+final_rf_wf_reg <- finalize_workflow(rf_wf_reg, best_rf_reg)
+final_rf_fit_reg <- fit(final_rf_wf_reg, data = crime_train)
+
+```
+
+### Model 3: XGBoost
+
+```{r}
+#| label: model3-xgb-estimate
+# Create random tuning grid
+set.seed(123)
+xgb_grid_reg <- grid_random(
+  tree_depth(range = c(3, 10)),
+  learn_rate(range = c(0.01, 0.3)),
+  loss_reduction(range = c(0, 1)),
+  size = 5
+)
+
+# Tune with cross-validation
+xgb_res <- tune_grid(
+  xgb_wf_reg,
+  resamples = crime_folds_reg,
+  grid = xgb_grid_reg,
+  metrics = reg_metrics,
+  control = control_grid(save_pred = TRUE),
+  verbose = TRUE
+)
+
+# Select best hyperparameters
+best_xgb <- select_best(xgb_res, metric = "rmse")
+
+# Finalize and fit model
+final_xgb_wf <- finalize_workflow(xgb_wf_reg, best_xgb)
+final_xgb_fit <- fit(final_xgb_wf, data = crime_train)
+```
+
+## Interpretation
+
+### Vraible Importance
+
+```{r}
+# Linear Regression doesn't have built-in importance, so skip
+
+# Random Forest importance
+rf_model_reg <- extract_fit_parsnip(final_rf_fit_reg)
+vip(rf_model_reg, num_features = 20)
+
+# XGBoost importance
+xgb_model_reg <- extract_fit_parsnip(final_xgb_fit)
+vip(xgb_model_reg, num_features = 20)
+
+
+```
+
+### Evaluate on Test Set
+
+```{r}
+# Linear Regression - Test
+lm_test_pred <- predict(lm_fit, new_data = crime_test) |> 
+  bind_cols(crime_test |> select(felony_severity))
+
+metrics(lm_test_pred, truth = felony_severity, estimate = .pred)
+
+# Random Forest - Test
+rf_test_pred <- predict(final_rf_fit_reg, new_data = crime_test) |> 
+  bind_cols(crime_test |> select(felony_severity))
+
+metrics(rf_test_pred, truth = felony_severity, estimate = .pred)
+
+# XGBoost - Test
+xgb_test_pred <- predict(final_xgb_fit, new_data = crime_test) |> 
+  bind_cols(crime_test |> select(felony_severity))
+
+metrics(xgb_test_pred, truth = felony_severity, estimate = .pred)
+
+
+```
+
+### Evaluate on Implementation Set
+
+```{r}
+# Linear Regression - Implementation
+lm_impl_pred <- predict(lm_fit, new_data = crime_enriched_implement) |> 
+  bind_cols(crime_enriched_implement |> select(felony_severity))
+
+metrics(lm_impl_pred, truth = felony_severity, estimate = .pred)
+
+# Random Forest - Implementation
+rf_impl_pred <- predict(final_rf_fit_reg, new_data = crime_enriched_implement) |> 
+  bind_cols(crime_enriched_implement |> select(felony_severity))
+
+metrics(rf_impl_pred, truth = felony_severity, estimate = .pred)
+
+# XGBoost - Implementation
+xgb_impl_pred <- predict(final_xgb_fit, new_data = crime_enriched_implement) |> 
+  bind_cols(crime_enriched_implement |> select(felony_severity))
+
+metrics(xgb_impl_pred, truth = felony_severity, estimate = .pred)
+
+
+```
+
+### Collect all metrics into one table
+
+```{r}
+all_metrics_reg <- bind_rows(
+  mutate(metrics(lm_test_pred, truth = felony_severity, estimate = .pred), model = "Linear Regression", set = "Test"),
+  mutate(metrics(rf_test_pred, truth = felony_severity, estimate = .pred), model = "Random Forest", set = "Test"),
+  mutate(metrics(xgb_test_pred, truth = felony_severity, estimate = .pred), model = "XGBoost", set = "Test"),
+  
+  mutate(metrics(lm_impl_pred, truth = felony_severity, estimate = .pred), model = "Linear Regression", set = "Implementation"),
+  mutate(metrics(rf_impl_pred, truth = felony_severity, estimate = .pred), model = "Random Forest", set = "Implementation"),
+  mutate(metrics(xgb_impl_pred, truth = felony_severity, estimate = .pred), model = "XGBoost", set = "Implementation")
+)
+
+```
+
+### Visualize 3 Models' Performances
+
+```{r}
+# Plot RMSE Comparison
+all_metrics_reg |>
+  filter(.metric == "rmse") |>
+  ggplot(aes(x = model, y = .estimate, fill = set)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "RMSE Comparison across Models and Datasets",
+       x = "Model",
+       y = "RMSE") +
+  theme_minimal()
+
+# Plot R-squared Comparison
+all_metrics_reg |>
+  filter(.metric == "rsq") |>
+  ggplot(aes(x = model, y = .estimate, fill = set)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "R-squared Comparison across Models and Datasets",
+       x = "Model",
+       y = "R-squared") +
+  theme_minimal()
+```
 
 # Appendix
 
-## First Stage: Data Processing (DC Open Data)
+## First Stage for Data Processing (DC Open Data)
 
 ### Load crime incident data (2008–2025) from DC Open Data portal
 
@@ -942,6 +1330,29 @@ crime_incidents <- crime_incidents |>
   ))
 ```
 
+Here we assign a `felony_severity` score to each major offense type, using the [Cambridge Crime Harm Index (CHI)](https://doi.org/10.1093/police/paw003) and [per-case cost data](https://pmc.ncbi.nlm.nih.gov/articles/PMC2835847/) as reference. CHI sentence days reflect the relative harm severity as determined by sentencing guidelines. While monetary cost gives an economic impact perspective, the severity ranking primarily follows the CHI framework.
+
+| Felony Offense | `felony_severity` Score | CHI Sentence Days (per case) | Total Cost per Case (USD, 2008) |
+|------------------|------------------|------------------|-------------------|
+| HOMICIDE | 7 | 5,475 | \$8,982,907 |
+| SEX ABUSE (Rape/Sexual Assault) | 6 | 1,825 / 365 | \$240,776 |
+| ASSAULT W/DANGEROUS WEAPON | 5 | 1,460 (GBH) | \$107,020 (Aggravated Assault) |
+| ROBBERY | 4 | 365 | \$42,310 |
+| ARSON | 3 | 33 | \$21,103 |
+| BURGLARY | 2 | 20 | \$6,462 (Household) |
+| MOTOR VEHICLE THEFT | 1 | 20 | \$10,772 |
+| THEFT F/AUTO / THEFT/OTHER | 0 | 20 / 2 | \$3,532 |
+
+**Notes:**
+
+-   **ASSAULT W/DANGEROUS WEAPON** is aligned with **GBH (Grievous Bodily Harm, Intent)** rather than ABH (Actual Bodily Harm), due to its higher violence and harm level.
+
+-   **MOTOR VEHICLE THEFT** has a higher monetary cost than **BURGLARY**, but both offenses carry similar CHI sentence days (20). However, **BURGLARY** often involves unlawful entry into private residences, violating a victim’s sense of safety and security. This intrusion into personal space is considered more psychologically harmful and socially disruptive than property theft alone, which is why burglary is ranked higher in severity.
+
+-   
+
+    -   **THEFT F/AUTO** and **THEFT/OTHER** are not classified as felonies in this model; they receive a score of 0 despite having minor CHI and cost estimates. While [D.C. law](https://code.dccouncil.gov/us/dc/council/code/sections/22-3212) does consider theft exceeding \$1,000 as a felony, we exclude these categories because the offense labels in the dataset do not reliably distinguish petty theft from felony-level theft. Without clear thresholds or legal classifications in the `offense` variable, treating all theft as non-felony ensures greater consistency in modeling.
+
 ### Add Features
 
 ```{r}
@@ -950,7 +1361,7 @@ crime_incidents <- crime_incidents |>
 crime_sf <- st_as_sf(crime_incidents,
                      coords = c("longitude", "latitude"),
                      crs = 4326,
-                     remove = FALSE) 
+                     remove = FALSE)
 
 ```
 
@@ -1239,6 +1650,7 @@ crime_enriched <- crime_m |>
 write_csv(crime_enriched, "data/crime_enriched.csv")
 
 crime_enriched <- read_csv("data/crime_enriched.csv")
+
 ```
 
 ## Second Stage for Data Processing (ACS Data)
@@ -1378,7 +1790,7 @@ missing_table <- var_check_df |>
 
 ```
 
-### Starting Data Retrieval from 2012
+### Starting ACS Data Retrieval from 2012
 
 Our checks show that data from 2009 to 2011 is incomplete. Since incomplete data cannot yield reliable predictions and we aim to forecast for the most recent year (2023), we will begin retrieving data from 2012 onward.
 
@@ -1399,9 +1811,14 @@ acs_raw <- map_dfr(years, function(y) {
     mutate(year = y)
 })
 
+# Export acs raw data
+write_csv(acs_raw, "data/acs_raw.csv")
+
+acs_raw <- read_csv("data/acs_raw.csv")
+
 ```
 
-Merge into `crime_enriched`
+Prepare ACS data for merging by pivoting and creating derived features.
 
 ```{r}
 #| eval: false
@@ -1440,7 +1857,258 @@ acs_processed <- acs_wide |>
     tract = stringr::str_sub(GEOID, -6)
   )
 
+# Export acs processed data
+write_csv(acs_processed, "data/acs_processed.csv")
 
+acs_processed <- read_csv("data/acs_processed.csv")
+```
+
+### Handling Missing Values in Tract Column
+
+As we want our data to keep the maximum valid geospatial features at tract level, we need to check if the DC open data, ACS5 data and official DC tract data are consistent before we merge them into one. We first compare tract IDs in `crime_enriched` and `acs_processed` with the official 2023 shapefile to identify missing or obsolete tracts.
+
+```{r}
+#| eval: false
+#| include: true
+
+# Load 2023 official DC tract shapefile 
+dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp") 
+
+# Extract tract lists
+official_tract6 <- unique(dc_tract_sf$TRACTCE)
+
+official_tract11 <- unique(dc_tract_sf$GEOID)
+
+# Compare crime_enriched (census_tract) with dc_tract_sf$TRACTCE
+crime_tracts <- unique(na.omit((crime_enriched$census_tract)))
+
+missing_in_crime <- setdiff(official_tract6, crime_tracts)
+
+unexpected_in_crime <- setdiff(crime_tracts, official_tract6)
+
+# Compare acs_processed GEOID with official dc_tract_sf$GEOID
+acs_tracts <- unique(na.omit(acs_processed$GEOID))
+
+missing_in_acs <- setdiff(official_tract11, acs_tracts)
+
+unexpected_in_acs <- setdiff(acs_tracts, official_tract11)
+```
+
+The official DC shapefile (`dc_tract_sf`) contains 206 tracts, while both `crime_enriched$census_tract` and `acs_processed$GEOID` contain 231 unique tract identifiers after droping NAs. This means there are 25 tracts present in the datasets but missing from the 2023 TIGER shapefile.
+
+*Note: Only crime incidents from DC open data have NAs in the tract column. There's no NAs in ACS5 tract column, meaning all tracts had been calculated its demographic feature in ACS survey. While a few crime incidents did not have their tract recorded, this may occur during law enforcement operations when detailed location data is not captured.*
+
+Since the `crime_enriched` data spans 2008–2025 and the `acs_processed` data covers 2012–2023, it is likely that changes to tract definitions, such as splits, merges, or renumbering, have occurred over the years. These changes can result in older tract codes persisting in historical data but not appearing in the most recent shapefile.
+
+To confirm this, we compare the unexpected tracts in `crime_enriched` and `acs_processed` against the official 2023 shapefile to see if they are the same.
+
+```{r}
+#| eval: false
+#| include: true
+# Convert 11-digit ACS GEOIDs to 6-digit tract codes
+unexpected_in_acs_tract6 <- substr(unexpected_in_acs, 6, 11)
+
+# Check if both datasets contain the same extra tracts
+setequal(unexpected_in_crime, unexpected_in_acs_tract6)
+
+# Inspection of overlap and differences
+intersect(unexpected_in_crime, unexpected_in_acs_tract6)
+
+setdiff(unexpected_in_crime, unexpected_in_acs_tract6)
+
+setdiff(unexpected_in_acs_tract6, unexpected_in_crime)
+```
+
+The results show that the two datasets share the exact same set of 25 unexpected tract codes.
+
+To investigate whether these tracts are legacy codes that have since been phased out, we now filter both datasets to include only observations from 2019 to 2023, which we wanna use to build our predictive models. We then compare the resulting tract coverage to the official 2023 DC shapefile.
+
+```{r}
+#| eval: false
+#| include: true
+
+# Filter crime data to 2019–2023
+crime_filtered <- crime_enriched |>
+  mutate(report_date = lubridate::ymd_hms(str_sub(report_dat, 1, 19))) |> 
+  filter(year(report_date) >= 2019 & year(report_date) <= 2023)
+
+# Filter ACS data to 2019–2023
+acs_filtered <- acs_processed |>
+  filter(year >= 2019 & year <= 2023)
+
+# Extract unique tract identifiers
+crime_tracts_filtered <- unique(na.omit(crime_filtered$census_tract)) 
+
+acs_tracts_filtered <- unique(na.omit(acs_filtered$GEOID))
+```
+
+We then identify any tracts that appear in the filtered datasets (2019-2023) but are not included in the 2023 TIGER shapefile.
+
+```{r}
+#| eval: false
+#| include: true
+
+# Compare against 2023 official tracts
+missing_in_crime_2019_2023 <- setdiff(official_tract6, crime_tracts_filtered)
+
+unexpected_in_crime_2019_2023 <- setdiff(crime_tracts_filtered, official_tract6)
+
+missing_in_acs_2019_2023 <- setdiff(official_tract11, acs_tracts_filtered)
+
+unexpected_in_acs_2019_2023 <- setdiff(acs_tracts_filtered, official_tract11)
+```
+
+The crime data from 2019–2023 aligns perfectly with the 2023 TIGER shapefile, showing no extra tracts. However, ACS still contains 25 unexpected tracts. This is likely because ACS 5-year estimates span earlier years and retain older tract definitions. To ensure consistency across all datasets, we will restrict our analysis to the 2020–2023 period.
+
+To investigate further, we check whether these 25 tracts are the same as the unexpected tracts found in the full datasets from 2008–2025 (crime incidents) and 2012–2023 (ACS5).
+
+```{r}
+#| eval: false
+#| include: true
+# Check if the 25 unexpected tracts in 2019–2023 ACS match those in the full ACS data
+setequal(unexpected_in_acs_2019_2023, unexpected_in_acs)
+
+# Trim ACS GEOIDs to 6-digit tract codes for comparison with crime incidents data
+unexpected_in_acs_tract6_filtered <- substr(unexpected_in_acs_2019_2023, 6, 11)
+
+# Check if these match the unexpected tracts in the full crime incidents dataset
+setequal(unexpected_in_acs_tract6_filtered, unexpected_in_crime)
+
+```
+
+In the full datasets:
+
+-   Both crime_enriched (2008-2025) and acs_processed (2012-2023) contain 25 extra tracts not present in the 2023 TIGER shapefile.
+
+-   These 25 tracts are identical across both datasets, indicating they are likely the legacy tracts.
+
+In the 2019–2023 subset:
+
+-   The unexpected tracts have been removed from the crime incidents data.
+
+-   However, they still exist in the ACS data.
+
+This suggests that the outdated tracts persist in ACS due to the rolling nature of 5-year estimates.
+
+To test this further, we narrow ACS to 2020–2023. Because this window only includes data from 2016 onward, we expect the outdated tracts to drop off if the change occurred before or around 2016.
+
+```{r}
+#| eval: false
+#| include: true
+# Filter ACS to 2020–2023
+acs_filtered_2020 <- acs_processed |>
+  filter(year >= 2020 & year <= 2023)
+
+acs_tracts_filtered_2020 <- unique(acs_filtered_2020$GEOID)
+
+# Compare with official 2023 tract list
+missing_in_acs_2020_2023 <- setdiff(official_tract11, acs_tracts_filtered_2020)
+
+unexpected_in_acs_2020_2023 <- setdiff(acs_tracts_filtered_2020, official_tract11)
+
+# Compare with 2019-2023 ACS tract list
+
+setdiff(acs_tracts_filtered, acs_tracts_filtered_2020)
+
+setdiff(acs_tracts_filtered_2020, acs_tracts_filtered)
+
+# Check if all unexpected tracts are gone
+acs_tract6_filtered_2020 <- substr(acs_tracts_filtered_2020, 6, 11)
+
+setequal(crime_tracts_filtered, acs_tract6_filtered_2020)
+```
+
+We find that the 2020-2023 ACS data now matches the 2023 TIGER shapefile and the 2019–2023 crime data exactly. The outdated tract codes still appeared in the 2019–2023 results, while they disappeared in the 2020-2023 results. This may because ACS 5-year estimates include data from earlier years. 2019-2023 ACS data covers data from 2015, and 2020-2023 ACS data covers data from 2016. So the tract changes are likely to happen between 2015 and 2016.
+
+Next, we will compare the TIGER shapefiles from 2015 and 2016 to confirm when the tract boundary changes were officially implemented to test this hypothesis.
+
+```{r}
+#| eval: false
+#| include: true
+# Load 2015 and 2016 DC tract shapefiles
+tract_2015 <- st_read("data/tl_2015_11_tract/tl_2015_11_tract.shp")
+tract_2016 <- st_read("data/tl_2016_11_tract/tl_2016_11_tract.shp")
+
+# Extract unique GEOIDs
+geoids_2015 <- unique(tract_2015$GEOID)
+geoids_2016 <- unique(tract_2016$GEOID)
+
+# Compare 
+setdiff(geoids_2015, geoids_2016)
+setdiff(geoids_2016, geoids_2015)
+```
+
+The results show our assumption was incorrect. No tract changes occurred between 2015 and 2016. The GEOIDs are identical for both years.
+
+To further investigate when the tract definitions changed, we referred to the [U.S. Census Bureau's 2010 guide](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/districtofcolumbia.html), which states that DC had 179 census tracts as of 2010.
+
+However, we observed that the 2023 DC TIGER shapefile includes 206 tracts. The same count appears in the ACS 5-year data from 2020–2023 and the crime incident data from 2019–2023.
+
+This led to a second hypothesis: DC's total number of tracts increased between 2010 and 2023.
+
+```{r}
+#| eval: false
+#| include: true
+# Load 2010 DC tracts
+dc_tract_2010 <- st_read("data/tl_2010_11001_tract10/tl_2010_11001_tract10.shp")
+
+
+# Extract tract GEOIDs
+dc_tracts_2010_ids <- unique(dc_tract_2010$GEOID)
+dc_tracts_2023_ids <- unique(dc_tract_sf$GEOID)
+
+# Compare tract counts and differences
+length(dc_tracts_2010_ids)  # 179
+length(dc_tracts_2023_ids)  # 206
+
+setdiff(dc_tracts_2023_ids, dc_tracts_2010_ids) # 52 added
+setdiff(dc_tracts_2010_ids, dc_tracts_2023_ids) # 25 removed
+```
+
+From this comparison, we see that 52 tracts were added and 25 were removed between 2010 and 2023. This results in a net increase of 27 tracts, confirming that DC's tract count grew from 179 to 206 over this period. While this change isn't explicitly documented in a single source, it can be deduced through shapefile comparison. To identify the specific year of this change, we can do this comparison year by year.
+
+Since both 2015 and 2016 still had 179 tracts, which are the same as in 2010, we began checking for changes starting from 2017.
+
+```{r}
+#| eval: false
+#| include: true
+# Load 2017-2020 DC tract shapefiles
+tract_2017 <- st_read("data/tl_2017_11_tract/tl_2017_11_tract.shp")
+tract_2018 <- st_read("data/tl_2018_11_tract/tl_2018_11_tract.shp")
+tract_2019 <- st_read("data/tl_2019_11_tract/tl_2019_11_tract.shp")
+tract_2020 <- st_read("data/tl_2020_11_tract/tl_2020_11_tract.shp")
+
+# Extract unique GEOIDs
+geoids_2017 <- unique(tract_2017$GEOID)
+geoids_2018 <- unique(tract_2018$GEOID)
+geoids_2019 <- unique(tract_2019$GEOID)
+geoids_2020 <- unique(tract_2020$GEOID)
+
+# Compare year by year
+setdiff(geoids_2017, geoids_2018)
+setdiff(geoids_2018, geoids_2017)
+
+setdiff(geoids_2018, geoids_2019)
+setdiff(geoids_2019, geoids_2018)
+
+setdiff(geoids_2019, geoids_2020)
+setdiff(geoids_2020, geoids_2019)
+
+```
+
+The results confirm that the major tract update occurred between 2019 and 2020. During this transition, 25 tracts were removed and 52 were added, increasing the total from 179 to 206.
+
+While ACS and crime data each follow their own update cycles, we have verified that for the years 2020–2023, the tracts in both ACS 5-year estimates and crime incidents data fully match the 2023 TIGER shapefile.
+
+Therefore, to ensure consistency across all datasets, we revise our modeling window to cover only the four years from 2020 to 2023, instead of the originally planned 2019–2023 period.
+
+### Merge crime_enriched and ACS5 data
+
+Clean and prepare the crime data to match ACS structure.
+
+```{r}
+#| eval: false
+#| include: true
 # Select required fields from `crime_enriched`
 crime_enriched <- crime_enriched |>
   mutate(
@@ -1451,7 +2119,13 @@ crime_enriched <- crime_enriched |>
   ) |>
     rename(tract = census_tract) #rename census_tract for join
 
+```
 
+Now we merge the cleaned crime data with the ACS data by matching on tract and year.
+
+```{r}
+#| eval: false
+#| include: true
 # Perform left join by tract and year
 crime_enriched <- left_join(
   crime_enriched,
@@ -1472,16 +2146,16 @@ Last process to keep valid data:
 #| eval: false
 #| include: true
 crime_enriched_filtered <- crime_enriched |>
-  filter(year >= 2012, year <= 2023)
+  filter(year >= 2020, year <= 2023)
 
 # Inspect which variables for missing values
 colSums(is.na(crime_enriched_filtered))
 
 ```
 
-### Handling Missing Values
+### Data imputation on missing values
 
-During the merge of the DC Open Data and ACS datasets, a large number of missing values (NAs) were introduced. To ensure a clean, reliable input for our model, we therefore dropped all rows containing NA values.
+During the merge of DC Open Data and ACS datasets, several variables introduced a high proportion of missing values. Instead of dropping all rows with any NA, which would remove some tracts entirely, we first drop variables that are missing in more than 95% of `(year, tract)` groups. We then remove any remaining rows that still contain missing values.
 
 ```{r}
 #| eval: false
@@ -1493,30 +2167,78 @@ na_ratio <- colSums(is.na(crime_enriched_filtered)) / nrow(crime_enriched_filter
 crime_enriched_filtered <- crime_enriched_filtered |>
   select(which(na_ratio < 0.3))
 
-crime_enriched_no_na <- crime_enriched_filtered |>
-  drop_na()
+# Drop rows where `tract` is NA
+crime_enriched_filtered <- crime_enriched_filtered |>
+  filter(!is.na(tract))
 
-table(crime_enriched_no_na$year)
+# Identify columns to check (excluding grouping columns)
+cols_to_check <- setdiff(colnames(crime_enriched_filtered), c("year", "tract"))
+
+# For each (year, tract) group, calculate the NA rate for each variable
+na_summary <- crime_enriched_filtered |>
+  group_by(year, tract) |>
+  summarise(across(all_of(cols_to_check), ~ mean(is.na(.)), .names = "na_{col}")) |>
+  ungroup()
+
+# Drop variables missing in >95% of (year, tract) group
+vars_with_high_na <- na_summary |>
+  pivot_longer(cols = starts_with("na_"), names_to = "var", values_to = "na_rate") |>
+  filter(na_rate > 0.95) |>
+  mutate(var = sub("^na_", "", var)) |>
+  distinct(var) |>
+  pull(var)
+
+crime_enriched_filtered <- crime_enriched_filtered |>
+  select(-all_of(vars_with_high_na))
+  
+# Check how many NA values remain per column
+colSums(is.na(crime_enriched_filtered))
+
+crime_enriched_filtered |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "column", values_to = "na_count") |>
+  filter(na_count > 0) |>
+  arrange(desc(na_count))
+
+# Drop known NA columns that are not used for modeling
+crime_enriched_no_na <- crime_enriched_filtered |>
+  select(-c(end_date, psa, district, start_date, block_group, voting_precinct))
+
+# Check if there's NA in crime_enriched_no_na
+sum(is.na(crime_enriched_no_na))
 
 write_csv(crime_enriched_no_na, "data/crime_enriched_acs_nona.csv")
 
 crime_enriched_no_na <- read_csv("data/crime_enriched_acs_nona.csv")
 
+# Check the tract column
+unique(crime_enriched_no_na$tract)
+
 ```
 
 ## Final Stage for Data Processing (NIBRS Data)
 
-This part is for final project's data and is still in processing. 
+We checked the [UCR Program data from Harvard Dataverse](https://dataverse.harvard.edu/dataverse/ucrdata), including its administrative segment, offense segment, offender segment, arrestee segment and victim segment. Though they have proper year column that we can merge our current data frame with, they are missing the column of tract number. Actually, these datasets cover the whole US. So they might be more useful when building a predictive model at state level, instead of tract level within DC. Here, we decide not to joining the data from NIBRS for our DC-crime-predicting model.
 
 ```{r}
 #| eval: false
 #| include: true
-test_rds <- readRDS("data/DC/nibrs/offense/nibrs_offense_segment_2021.rds")
 
-admin_2023 <- readRDS("data/DC/nibrs/admin/nibrs_administrative_segment_2021.rds")
+admin_2023 <- readRDS("data/DC/nibrs/admin/nibrs_administrative_segment_2021.rds") |>
+  filter(state_abb == "dc")
 
+offense_2023 <- readRDS("data/DC/nibrs/offense/nibrs_offense_segment_2023.rds") |>
+  filter(state_abb == "dc")
+
+offender_2023 <- readRDS("data/DC/nibrs/offender/nibrs_offender_segment_2023.rds") |>
+  filter(state_abb == "dc")
+
+arrestee_2023 <- readRDS("data/DC/nibrs/arrestee/nibrs_arrestee_segment_2023.rds") |>
+  filter(state_abb == "dc")
+
+victim_2023 <- readRDS("data/DC/nibrs/victim/nibrs_victim_segment_2023.rds") |>
+  filter(state_abb == "dc")
 ```
-
 
 ```{=html}
 <script>
@@ -1546,4 +2268,3 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 </script>
 ```
-
