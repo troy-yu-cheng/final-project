@@ -768,8 +768,8 @@ xgb_grid <- grid_random(
   size = 5
 )
 
-set.seed(123)
 # Tune the model
+set.seed(123)
 xgb_res <- tune_grid(
   xgb_wf,
   resamples = crime_folds,
@@ -799,7 +799,7 @@ vip(xgb_model, num_features = 20)
 
 ```
 
-The variable importance plot shows `method_OTHERS` and `black_pct` as top drivers, followed by proximity measures like `nearest_bank_dist`, `nearest_liquorstore_dist`, `nearest_grocery_dist`, `nearest_wifi_dist`.
+The variable importance plot shows `black_pct` as top drivers, followed by proximity and temporal measures like `nearest_grocery_dist`, `yday_cos`, `nearest_wifi_dist` and `yday`.
 
 ```{r}
 # Apply XGBoost model to test set
