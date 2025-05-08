@@ -170,6 +170,7 @@ eg. I need to use `git branch -d troy` to delete the branch I created.
   - ranger
   - xgboost
   - rlang
+  - bestNormalize
 
 ## Data Sources
 
