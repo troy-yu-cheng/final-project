@@ -10,7 +10,7 @@ Using DC Open Data crime incidents (2008–2025) enriched with spatial features 
 
 2) which felony category a crime falls under (multi-classification); 
 
-3) what felony severity score of a crime new reported in DC would be (regression task). 
+3) what felony severity score of a new reported crime in DC would be (regression task). 
 
 We train and test on 2019–2022 data, implement on 2023, and the final merged dataset (crime_enriched_acs_nona.csv) is available via qmd file. 
 
