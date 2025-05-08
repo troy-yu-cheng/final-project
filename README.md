@@ -20,6 +20,19 @@ We train and test on 2019–2022 data, implement on 2023, and the final merged d
 
 <https://troy-yu-cheng.github.io/final-project/>
 
+## Repository Structure
+```
+final-project
+   ├── assets/                      # Project assets 
+   │   └── gu.ico                   # Georgetown University favicon
+   ├── .gitignore            
+   ├── README.md                  
+   ├── final-project.Rproj
+   ├── index.html                   # Generated HTML output from Quarto
+   ├── index.qmd                    # Main Quarto document with exercises and code
+   └── trycstyle.css                # CSS styles for the webpage
+```
+
 ## Pull Request Workflow Quick Reference
 
 ### 1. Start a New Branch
