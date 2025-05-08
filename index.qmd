@@ -1,6 +1,6 @@
 ---
 title: "Data Science for Public Policy"
-subtitle: "Final Project"
+subtitle: "Policing by Prediction: Modeling Felony Risk and Severity Using Unsupervised Machine Learning"
 author: 
   - name: "Troy Cheng, Ziqiao Shan, Minji Kang, Sarah Krause"
     email: yc1317@georgetown.edu
@@ -246,6 +246,7 @@ Furthermore, we calculate average felony rates by census tract and display them 
 #| label: map-felony-by-tract
 #| message: false
 #| warning: false
+#| output: false
 
 dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
 ```
@@ -477,7 +478,7 @@ The specific recipe is as below:
 #| label: crime_rec_xgb
 set.seed(123)
 crime_rec_xgb <- recipe(felony_flag ~ ., data = crime_train) |>
-  step_rm(felony_severity) |>
+  step_rm(felony_severity, felony_severity_trans) |>
   step_downsample(felony_flag) |>
   step_date(report_date_parsed, features = "dow", label = TRUE) |>
   step_mutate(
@@ -767,6 +768,7 @@ xgb_grid <- grid_random(
   size = 5
 )
 
+set.seed(123)
 # Tune the model
 xgb_res <- tune_grid(
   xgb_wf,
@@ -781,6 +783,8 @@ best_xgb <- select_best(xgb_res, metric = "recall")
 
 # Finalize workflow
 final_xgb_wf <- finalize_workflow(xgb_wf, best_xgb)
+
+set.seed(123)
 final_xgb_fit <- fit(final_xgb_wf, data = crime_train)
 
 ```
@@ -1006,9 +1010,9 @@ multiclass_train |>
 
 ```
 
-Based on the table above, crimes were categorized into an ordinal scale from 0 to 7, with 0 representing non-felonies and 7 representing the most severe felony `homicide`.
+Based on the table above, crimes were categorized into an ordinal scale from 1 to 7, with 1 representing motor vehicle theft and 7 representing the most severe felony `homicide`.
 
-The distribution of felony_severity in the training set is highly skewed. About 69% of the observations fall under severity 0, meaning they are not classified as felonies under our scheme. The most frequent felony types are lower-level ones such as `motor vehicle theft`(severity = 1) and `burglary` (severity = 2). Mid-range felonies like `robbery` (severity = 4) and `aggravated assault` (severity = 5) occur less often, while severe crimes like `sexual abuse` (severity = 6) and `homicide` (severity = 7) are extremely rare, with only a few hundred instances in total. The category with severity 3 `arson` is the rarest, appearing only 17 times.
+The distribution of felony_severity in the training set is highly skewed. The most frequent felony types are lower-level ones such as `motor vehicle theft`(severity = 1) and `burglary` (severity = 2). Mid-range felonies like `robbery` (severity = 4) and `aggravated assault` (severity = 5) occur less often, while severe crimes like `sexual abuse` (severity = 6) and `homicide` (severity = 7) are extremely rare, with only a few hundred instances in total. The category with severity 3 `arson` is the rarest, appearing only 15 times.
 
 To visualize this distribution, we plot the number of cases per severity score:
 
@@ -1033,8 +1037,13 @@ This long-tailed distribution shows that serious crimes like `arson` are rare in
 The following map visualizes the distribution of felony incidents across the District.
 
 ```{r}
+#| message: false
+#| warning: false
+#| output: false
 dc_tract_sf <- st_read("data/tl_2023_11_tract/tl_2023_11_tract.shp")  # load tract shp
+```
 
+```{r}
 crime_sf <- crime |>
   st_as_sf(coords = c("longitude", "latitude"))
 
@@ -1046,10 +1055,9 @@ ggplot(data = crime_sf) +
   theme(
     text = element_text(family = "serif") 
   )
-
 ```
 
-The more severe felonies (class 6 and 7) are concentrated in Wards 7 and 8.
+The more severe felonies (class 6 and 7) are concentrated in the eastern and southeastern parts of DC.
 
 Since motor vehicle theft is the most common felony in DC, this map visualizes the percentage of felonies that are car thefts in each census tract.
 
@@ -1123,7 +1131,7 @@ ggplot(tract_sf_newjoined) +
 
 ```
 
-Each individual facet of the map shows the distribution of each felony severity class. Unsurprisingly, class 1 has the widest geographical distribution across the District, while class 3, which only had a 20 incidents total in the dataset, is quite sparse. Class 7, the most severe class, is highly concentrated in wards 7 and 8, yet still with less than 50 total in each census tract.
+Each individual facet of the map shows the distribution of each felony severity class. Unsurprisingly, class 1 has the widest geographical distribution across the District, while class 3, which only had a 15 incidents total in the dataset, is quite sparse. Class 7, the most severe class, is highly concentrated in southern and southeastern DC, yet still with less than 50 total in each census tract.
 
 Next, we examine the distribution of felony severity by day of the week, one of the explanatory variables used in our candidate models to predict felony severity class.
 
@@ -1261,8 +1269,6 @@ random_pred <- predict(random_fit, multiclass_test, type = "class") |>
 
 ```{r}
 # calculate accuracy and confusion matrix
-random_pred
-
 conf_mat(data = random_pred,
          truth = felony_severity,
          estimate = .pred_class)
@@ -1334,8 +1340,6 @@ random_fit |>
   )
 ```
 
-under 18, hsplus, foreign born, longitude, poverty rate
-
 Interestingly, 'under18_pct' is the most important factor, with a normalized importance of 1. This value indicates the percentage of the population that is under the age of 18 in each tract. The following visualization shows the average percentage of the census tract that is under 18 within each felony severity category.
 
 ```{r}
@@ -1366,11 +1370,15 @@ ggplot(hs, aes(x = felony_severity, y = avg_hs, group = 1)) +
   geom_line() +
   geom_point() +
   labs(
-    title = "Average Percent of Community with Greater than High School Education by Felony Severity",
+    title = "Community Education Level by Felony Severity",
     x = "Felony Severity",
-    y = "Average Percent with Greater than High School Education in a Community"
+    y = "Percent with High School Education or Higher"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(size = 11),   
+    axis.title.x = element_text(size = 11)                      
+  )
 ```
 
 Neighborhoods with higher rates of more than high school education tend to have higher rates of lower felony severity classes. Class 5 and 7 tend to occur in neighborhoods with lower rates of high school education, indicating a downwards trend. However, class 6 is the exception to this trend.
@@ -1448,9 +1456,6 @@ cart_test <- cart_wf |>
             metrics = metric_set(accuracy))
 
 cart_test |>
-  collect_metrics()
-
-cart_test |>
   show_best()
 
 # finalize workflow
@@ -1468,8 +1473,7 @@ predictions <- bind_cols(
   multiclass_test,
   predict(object = cart_fit, new_data = multiclass_test),
   predict(object = cart_fit, new_data = multiclass_test, type = "prob")
-) 
-select(predictions, felony_severity, starts_with(".pred"))
+)
 ```
 
 ### Metrics for CART Model
@@ -1666,7 +1670,7 @@ calc_class_metrics(x = multiclass_implement_results,
 
 The final model's overall accuracy rate is 16.32%, so the model makes correct predictions about 16% of the time. The within-class recall and precision varies between classes.
 
-Class 1 had the precision, and class 4 had the best recall. The model performed the worst on class 3, with an accuracy and precision of 0%.
+Class 1 had the best precision, and class 4 had the best recall. The model performed the worst on class 3, with an accuracy and precision of 0%.
 
 The distribution of felony severities in the implementation data was very similar to the training data:
 
@@ -1690,14 +1694,14 @@ The implementation data only had 11 felonies of class 3, so it is unsurprising t
 
 The final model is quite limited in its practical usefulness because of its relatively low accuracy rate and within-class precision and recall. The model could potentially be improved with different class specifications. Because the dataset is dominated by felony severity class 1, a different approach could be a binary classification model with motor vehicle theft defined as a positive outcome, and all other felonies defined as a negative outcome. This specification would have less class imbalance, which may enhance precision and recall.
 
-Overall, it is difficult to predict the severity of a felony due to the variety of features related to crime, including geographic factors, demographic variables, and temporal factors. Additional features that may improve model performance include past rates of crimes of different felony severity levels, since the overall distribution of felony severity follows a similar trend in the District across years.
+Overall, it is difficult to predict the severity of a felony due to the variety of features related to crime, including geographic factors, demographic variables, and temporal factors. The limitations of the model will be explored further in the discussion section below. 
 
 # Regression Task
 
 ## Split Data
 
 ```{r}
-#| label: Split data
+#| label: Split data 1
 set.seed(123)
 crime_split_reg <- initial_split(crime_enriched_mod, prop = 0.8, strata = felony_severity_trans)
 
