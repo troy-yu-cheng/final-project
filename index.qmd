@@ -33,11 +33,13 @@ engine: knitr
 
 # Literature Review
 
-Urban crime remains a pressing public‑policy challenge that threatens residents’ safety and citywide prosperity. Washington, D.C. — with its sharp neighbourhood inequalities and highly variable crime trends — offers a revealing testbed for understanding where and why serious offences emerge. To move beyond surface-level counts, this project adopts an unsupervised machine learning approach to better understand the underlying patterns of crime in the city.
+Urban cities, characterized by their high population density, diverse socioeconomic landscapes, and intricate social interactions, often present environments where crime rates are elevated compared to less densely populated areas ([Cheng & Chen, 2021](https://doi.org/10.1007/978-981-15-8983-6_14)). The District of Columbia, a city marked by pronounced neighborhood disparities and shifting crime dynamics, presents a timely case for predictive crime modeling ([Golash-Boza & Oh, 2021](https://doi.org/10.1177/00111287211005394)). Our project investigates three key questions: To what extent can crime characteristics and spatial context predict whether an incident is a felony? How accurately can we classify the type of felony? And can we estimate the felony severity score associated with a newly reported crime in DC? These questions not only reflect academic interest in machine learning for social applications, but also offer practical insights for public-sector decision-making on law enforcement and urban resource allocation.
 
-A substantial body of research links environmental features and police activity to crime outcomes. Risk‑terrain studies consistently show that proximity to liquor outlets, transit nodes, and other public facilities elevates assault and robbery rates (Bowers & Johnson 2011). Hot‑spots experiments demonstrate that concentrating patrols on micro‑places produces modest but significant crime reductions that diffuse to surrounding blocks (Braga, Papachristos, & Hureau 2014). Problem‑oriented policing (POP) evaluations likewise report a small yet reliable decline in crime and disorder when officers apply the SARA cycle to diagnose and address local problems (Weisburd et al. 2010). At the same time, cost‑of‑crime analyses reveal that felonies impose orders‑of‑magnitude larger social losses than misdemeanours, making them a natural focal point for resource allocation (McCollister, French, & Fang 2010). Recent optimisation work further argues that reallocating patrol units according to deterrence elasticities could cut expected social harm by up to 15 percent (He, Li, & Zhao 2023).
+A robust body of literature underscores the importance of both spatial and socioeconomic factors in shaping crime patterns. Environmental criminology highlights how the built environment—liquor outlets, transit hubs, vending zones, and other public facilities—can serve as vectors of accessibility that increase the likelihood of certain offenses ([Bowers & Johnson, 2011](https://doi.org/10.1080/07418825.2010.486037)). Risk-terrain modeling shows that crimes often cluster around these spatial features. In parallel, socioeconomic disadvantage at the neighborhood level has long been associated with elevated rates of both violent and property crime. Multilevel studies confirm that factors such as poverty, unemployment, and educational attainment are closely linked to victimization risk([Van et al.,2006](https://doi.org/10.1525/sp.2006.53.2.226)). By incorporating ACS 5-year estimates alongside geo-spatial indicators from D.C. Open Data, our model reflects a multidimensional understanding of crime exposure and allows for fine-grained prediction at the incident level.
 
-Despite these insights, two notable gaps remain. First, most empirical studies rely on pre‑defined hot spots or supervised models calibrated to past incident counts, limiting their ability to capture the fluid, non‑stationary nature of urban crime. Second, few papers integrate environmental exposure, police deployment, and felony severity into a single predictive framework. To better address this issue, this project builds three different models to predict: i) the likelihood of a crime being a felony (binary classification); ii) which felony category a crime falls under (multi-classification); iii) what felony severity score of a crime new reported in DC would be (regression task). This project offers a data‑driven tool for D.C. agencies seeking to optimise deployment and reduce the social costs of violent and high‑impact offences.
+Felony crimes represent the most severe and socially costly offenses in the criminal justice system. Legally defined in D.C. as offenses punishable by more than one year of imprisonment ([Council of the District of Columbia, 2025](https://code.dccouncil.gov/us/dc/council/code/titles/22)), felonies include acts such as assault with a dangerous weapon, robbery, and homicide. These crimes disproportionately consume public safety resources and contribute to long-term social harm. The societal cost of violent felonies can reach tens of thousands of dollars per incident, factoring in medical care, lost productivity, and incarceration ([McCollister et al., 2010](https://doi.org/10.1016/j.drugalcdep.2009.12.002)). Prioritizing felony classification enables the development of targeted interventions and more efficient policing. In our study, the felony severity score serves as the core outcome in a regression task aimed at quantifying the harm associated with newly reported incidents.
+
+While spatial and socioeconomic features help explain where and why crimes occur, effective crime prevention also depends on how institutions respond to these risks. Problem-oriented policing (POP) emphasizes proactive, context-sensitive interventions based on the SARA model—Scanning, Analysis, Response, and Assessment.([Weisburd et al.2010](https://onlinelibrary.wiley.com/doi/10.1111/j.1745-9133.2010.00617.x)). Meanwhile, hot-spots policing strategies that concentrate patrols at high-risk micro-locations have been shown to reduce crime not only in targeted areas but also in adjacent zones through diffusion effects ([Braga et al., 2014](https://doi.org/10.1080/07418825.2012.673632)). These insights align closely with our project’s emphasis on prediction-informed intervention. Our modeling approach provides a practical tool for supporting targeted, evidence-based law enforcement strategies in DC.
 
 # Set up
 
@@ -317,7 +319,6 @@ plot_ly(
   )
 
 ```
-
 
 ## Select Error Metric
 
@@ -908,9 +909,7 @@ ggplot(metric_plot_df, aes(x = model, y = one_minus_recall, fill = dataset)) +
 
 ```
 
-
 # Multi-classification Task
-
 
 ```{r}
 # read in the data
@@ -1693,7 +1692,6 @@ The final model is quite limited in its practical usefulness because of its rela
 
 Overall, it is difficult to predict the severity of a felony due to the variety of features related to crime, including geographic factors, demographic variables, and temporal factors. Additional features that may improve model performance include past rates of crimes of different felony severity levels, since the overall distribution of felony severity follows a similar trend in the District across years.
 
-
 # Regression Task
 
 ## Split Data
@@ -2124,9 +2122,27 @@ We investigated our first research question through a binary classification mode
 
 We investigated our second research question through a multiclass classification model, also using machine learning techniques to develop three candidate models using the same geospatial features and demographic characteristics. The best performing model was random forest, with an overall accuracy rate on the implementation dataset of 16.32%. This low accuracy rate suggests future room for improvement, specifically through different feature engineering. Our models utilized both demographic and geospatial features, presenting a limitation of our approach to multi-classification, given that the binary classification and regression models both performed quite well, and they each used more specific feature engineering. Future researchers can focus on geospatial features for predicting felony severity class, and compare the performance of this model to one that uses only socioeconomic features to predict felony severity class. This approach can provide insight into the most salient predictors for felony severity.
 
-Finally, we explored our third research question through a regression model, utilizing machine learning methods to estimate a transformed version of felony severity classification. Because of the skewed nature of the dataset, we utilized a Yeo-Johnson transformation technique to reduce skewness. Random forest was the highest-performing model, with an R2 of 53% and RMSE of 1.32 on the implementation dataset. The regression task revealed important insights about the importance of spatial and situational predictors, such as proximity to liquor stores, grocery outlets, public Wi-Fi zones, and timing features like shift and day of week, rather than demographic and socioeconomic indicators. Future researchers may build on our regression analysis by adding socioeconomic and demographic variables to our existing regression model to determine which ones meaningfully enhance predictive power. 
+Finally, we explored our third research question through a regression model, utilizing machine learning methods to estimate a transformed version of felony severity classification. Because of the skewed nature of the dataset, we utilized a Yeo-Johnson transformation technique to reduce skewness. Random forest was the highest-performing model, with an R2 of 53% and RMSE of 1.32 on the implementation dataset. The regression task revealed important insights about the importance of spatial and situational predictors, such as proximity to liquor stores, grocery outlets, public Wi-Fi zones, and timing features like shift and day of week, rather than demographic and socioeconomic indicators. Future researchers may build on our regression analysis by adding socioeconomic and demographic variables to our existing regression model to determine which ones meaningfully enhance predictive power.
 
 It is difficult for law enforcement to balance public safety with community relations. It is worth highlighting that our regression findings suggest that crime prevention and targeting strategies that rely on environmental and geographic factors can identify high-severity risk areas without relying on demographic profiling. Our analysis adds valuable insights to the ongoing discussion on how to strike the right between community engagement and policing for public safety.
+
+# Reference
+
+Bowers, K. J., & Johnson, S. D. (2011). *Risk terrain modelling: Brokering criminological theory and GIS methods for crime forecasting*. Crime Science, 1, 5–17. <https://doi.org/10.1080/07418825.2010.486037>
+
+Braga, A. A., Papachristos, A. V., & Hureau, D. M. (2014). The effects of hot spots policing on crime: An updated systematic review and meta‑analysis. *Justice Quarterly*, 31(4), 633–663. <https://doi.org/10.1080/07418825.2012.673632>
+
+Cheng, T., & Chen, T. (2021). Urban crime and security. In W. Shi, M. F. Goodchild, M. Batty, M.-P. Kwan, & A. Zhang (Eds.), *Urban informatics* (pp. 213–228). Springer. <https://doi.org/10.1007/978-981-15-8983-6_14>
+
+Code of the District of Columbia. (2025). *Title 22: Criminal offenses and penalties*. <https://code.dccouncil.gov/us/dc/council/code/titles/22>
+
+Golash-Boza, T., & Oh, H. (2021). Crime and neighborhood change in the nation’s capital: From disinvestment to gentrification. *Crime & Delinquency, 67*(9), 1267–1294. <https://doi.org/10.1177/00111287211005394>
+
+McCollister, K. E., French, M. T., & Fang, H. (2010). The cost of crime to society: New crime‑specific estimates for policy and program evaluation. *Drug and Alcohol Dependence, 108*(1–2), 98–109. <https://doi.org/10.1016/j.drugalcdep.2009.12.002>
+
+Van Wilsem, J., Wittebrood, K., & de Graaf, N. D. (2006). Socioeconomic dynamics of neighborhoods and the risk of crime victimization: A multilevel study of improving, declining, and stable areas in the Netherlands. *Social Problems, 53*(2), 226–247. <https://doi.org/10.1525/sp.2006.53.2.226>
+
+Weisburd, D., Telep, C. W., Hinkle, J. C., & Eck, J. E. (2010). Is problem‑oriented policing effective in reducing crime and disorder? Findings from a Campbell systematic review. *Criminology & Public Policy, 9*(1), 139–172. <https://onlinelibrary.wiley.com/doi/10.1111/j.1745-9133.2010.00617.x>
 
 # Appendix
 
